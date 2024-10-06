@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httputil"
+	"time"
 )
 
 func handler(w http.ResponseWriter, r *http.Request) {
@@ -20,7 +21,18 @@ func handler(w http.ResponseWriter, r *http.Request) {
 func main() {
 	var httpServer http.Server
 	http.HandleFunc("/", handler)
+	http.HandleFunc("/chunked",handlerChunkedResponse)
 	log.Println("start http listening :18888")
 	httpServer.Addr = ":18888"
 	log.Println(httpServer.ListenAndServe())
+}
+
+func handlerChunkedResponse(w http.ResponseWriter, r *http.Request) {
+	c := http.NewResponseController(w)
+	for i := 1; i <= 10; i++ {
+		fmt.Fprintf(w, "Chunk #%d\n", i)
+		c.Flush()
+		time.Sleep(500 * time.Millisecond)
+	}
+	c.Flush()
 }
