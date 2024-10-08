@@ -1,20 +1,57 @@
 package main
 
 import (
+	"bufio"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 )
 
 func main() {
-	resp, err := http.Head("http://localhost:18888")
+	dialer := &net.Dialer {
+		Timeout: 30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+  conn, err := dialer.Dial("tcp", "localhost:18888")
 	if err != nil {
 		panic(err)
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	defer conn.Close()
+
+	request, err := http.NewRequest("GET", "http://localhost:18888/chunked", nil)
+	err = request.Write(conn)
 	if err != nil {
 		panic(err)
 	}
-	log.Println(string(body))
+	reader := bufio.NewReader(conn)
+
+	resp, err := http.ReadResponse(reader, request)
+	if err != nil {
+		panic(err)
+	}
+	if resp.TransferEncoding[0] != "chunked" {
+		panic("wrong transfer encoding")
+	}
+	for  {
+		sizeStr, err := reader.ReadBytes('\n')
+		if err == io.EOF {
+			break
+		}
+		size, err := strconv.ParseInt(string(sizeStr[:len(sizeStr)-2]), 16, 64)
+		if size == 0 {
+			break
+		}
+		if err != nil {
+			panic(err)
+		}
+
+		line := make([]byte, int(size))
+		reader.Read(line)
+		reader.Discard(2)
+		log.Printf(" %s\n", strings.TrimSpace(string(line)))
+	}
 }
