@@ -1,0 +1,20 @@
+[CA]
+basicConstraints=critical,CA:TRUE,pathlen:0
+keyUsing=digitalSignature,keyCertSign,cRLSign
+
+[Server] 
+basicConstraints=CA:FALSE
+keyUsing=digitalSignature,dataEncipherment
+extendedKeyUsage=clientAuth
+
+[Client]
+basicConstraints=CA:FALSE
+keyUsage=digitalSignature,dataEncipherment
+extendedKeyUsage=clientAuth
+
+[req_distinguished_name]
+countryName_default = JA
+stateOrProvinceName_default = Tokyo
+localityName_default = Itabashi
+0.organizationName_default = example.com
+emailAddress_default = webmaster@example.com
