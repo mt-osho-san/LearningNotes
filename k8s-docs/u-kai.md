@@ -260,3 +260,91 @@ Disk usage above the configured HighThresholdPercent value triggers garbage coll
 > If a readinessProbe is specified for this init container, its result will be used to determine the ready state of the Pod.
 
 - startup probe が true になれば sidecar として生き続ける init container であっても次のステップに進むらしい
+
+## Ephemeral Containers
+
+> Ephemeral containers differ from containers in that they lack guarantees for resources or execution, and they will never be automatically restarted, so they are not appropriate for building application.
+> Ephemeral containers may not have ports, so fields such as ports, livenessProbe, readinessProbe are disallowed.
+> Pod resource allocations are immutable, so setting resources is disallowed.
+
+> Ephemeral containers are useful for interactive troubleshooting when kubectl exec is insufficient because a container has crashed or a container image doesn't include debugging utilities.
+
+- For Debugging
+
+## Disruptions
+
+> A PDB limits the number of Pods of a replicated application that are down simultaneously from voluntary disruptions.
+
+- 下の例でもあったけどクォラムなどの、最少数の Pod が決まっている時には使うべしな感じ
+  > Pods which are deleted or unavailable due to a rolling upgrade to an application do count against the disruption budget, but workload resources (such as Deployment and StatefulSet) are not limited by PDBs when doing rolling upgrades. Instead, the handling of failures during application updates is configured in the spec for the specific workload resource.
+- ローリングアップデートの際には PDB は使われないので、ちゃんと Deployment などの設定で設定しましょう
+
+- It is recommended to set AlwaysAllow Unhealthy Pod Eviction Policy to your PodDisruptionBudgets to support eviction of misbehaving applications during a node drain. The default behavior is to wait for the application pods to become healthy before the drain can proceed.
+
+- AlwaysAllow を設定して、不正なアプリケーションをさっさと摘出できるようにすることがおすすめらしい
+
+- PDB を適切にセットしておけば、誤った node の更新などによる Pod の不足を防ぐことができそう
+- プロダクションで大事な Pod にはマストで設定しておくべきな気がする
+- ただ、予期せぬ障害には耐えられないはず
+- DisruptionTarget によって、事前に削除される前に理由を知ることができるってこと？
+- ただし、何回も同じエラーになりそうなものに関しては、DisruptionTarget の理由として利用されないっぽい
+- ただ、disruption は中断される可能性もあるようで、実際に削除されなかった場合は DisruptionTarget の理由は削除されるみたい
+- Separating Cluster Owner and Application Owner Roles のところ意味わからんかった.PDB が責務わけに使えるってどういう意味？
+- 一応 cluster administrator が PDB を設定する感じに見える
+
+## Pod Quality of Service Classes
+
+- QoS を設定することで、Node Pressure がある時にどの Pod を優先的に削除するかを決めることができる
+- QoS のクラスは Guaranteed, Burstable, BestEffort の 3 つ
+- 優先順は Guaranteed, Burstable, BestEffort の順なので逆の順番で削除されていく
+
+> When this eviction is due to resource pressure, only Pods exceeding resource requests are candidates for eviction.
+
+- resource pressure と node pressure は違うとみて良い？
+- NodePressure に達しても削除選択されるし、自身の resource request を超えていた場合でも Pod が削除されると思って良い？
+
+> For a Pod to be given a QoS class of Guaranteed:
+> Every Container in the Pod must have a memory limit and a memory request.
+> For every Container in the Pod, the memory limit must equal the memory request.
+> Every Container in the Pod must have a CPU limit and a CPU request.
+> For every Container in the Pod, the CPU limit must equal the CPU request.
+
+- つまり, qos: Guaranteed みたいな設定ではなく、limit,request の値の操作によって決まるってことかな？
+
+> Any Container exceeding a resource limit will be killed and restarted by the kubelet without affecting other Containers in that Pod.
+
+- resource limit さえ付けておけばメモリリークとかがあっても殺してくれるので他の pod に迷惑かけづらかったりするのかな？
+
+> The kube-scheduler does not consider QoS class when selecting which Pods to preempt. Preemption can occur when a cluster does not have enough resources to run all the Pods you defined.
+
+- QoS とは別に Preemption があるのかな？
+
+## User Namespaces
+
+- idmap ってなんや
+- user namespaces も新しい機能で、pod の host 内の権限管理とかか？
+
+> User namespaces is a Linux feature that allows to map users in the container to different users in the host.
+
+- つまり、linux の機能で、コンテナ内の User を host の User に紐づける機能？
+
+> A pod can opt-in to use user namespaces by setting the pod.spec.hostUsers field to false.
+
+- 結局 linux の機能なのか Pods の機能なのかよくわからんかった
+
+## DownloadAPI
+
+- 以下のような感じでデータを登録して、Pod 自身のデータにアクセスできる感じ?
+
+```yaml
+volumes:
+  - name: podinfo
+    downwardAPI:
+      items:
+        - path: "labels"
+          fieldRef:
+            fieldPath: metadata.labels
+        - path: "annotations"
+          fieldRef:
+            fieldPath: metadata.annotations
+```
