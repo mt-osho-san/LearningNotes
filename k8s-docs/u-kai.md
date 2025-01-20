@@ -5,8 +5,7 @@
 ここが面白いところな気がする。Reconcile loop で気づいたらあるべき状態になっていると言うのが k8s な気がしている
 
 - kube-proxy が実際にどうなっているのかは気になっているけど、調べられていない
-  > ラベルは効率的な検索・閲覧を可能にし、UI や CLI 上での利用に最適です。 識別用途でない情報は、アノテーションを用いて記録されるべきです。 ラベル管理は使うエコシステムによっても変わってくる重要な概念 k8s のラベル管理のベスプラを知りたい。。。
-- ラベルにプレフィックスがあるとか知らなかった
+  > ラベルは効率的な検索・閲覧を可能にし、UI や CLI 上での利用に最適です。 識別用途でない情報は、アノテーションを用いて記録されるべきです。 ラベル管理は使うエコシステムによっても変わってくる重要な概念 k8s のラベル管理のベスプラを知りたい。。。 ラベルにプレフィックスがあるとか知らなかった
   - `k8s.io/` とか `kubernetes.io/` とか...
 - ラベルセレクターで、等価だけではなく不等や集合などで表現できるの知らなかったけど、表現方法がわからなかった
   - notin とか見たことない。。。
@@ -332,7 +331,7 @@ Disk usage above the configured HighThresholdPercent value triggers garbage coll
 
 - 結局 linux の機能なのか Pods の機能なのかよくわからんかった
 
-## DownloadAPI
+## DownwordAPI
 
 - 以下のような感じでデータを登録して、Pod 自身のデータにアクセスできる感じ?
 
@@ -348,3 +347,112 @@ volumes:
           fieldRef:
             fieldPath: metadata.annotations
 ```
+
+## Deployment
+
+> To see the Deployment rollout status, run kubectl rollout status deployment/nginx-deployment.
+
+- 普通に知らなかった
+
+> Do not overlap labels or selectors with other controllers (including other Deployments and StatefulSets). Kubernetes doesn't stop you from overlapping, and if multiple controllers have overlapping selectors those controllers might conflict and behave unexpectedly.
+
+- 結構脆い.被らないようにしないといけないけど、被ってもなかなか気づかないとかありそう
+
+> A Deployment's rollout is triggered if and only if the Deployment's Pod template (that is, .spec.template) is changed, for example if the labels or container images of the template are updated. Other updates, such as scaling the Deployment, do not trigger a rollout.
+
+- rollout は Pod のテンプレートが変更された時だけ
+
+> For example, suppose you create a Deployment to create 5 replicas of nginx:1.14.2, but then update the Deployment to create 5 replicas of nginx:1.16.1, when only 3 replicas of nginx:1.14.2 had been created. In that case, the Deployment immediately starts killing the 3 nginx:1.14.2 Pods that it had created, and starts creating nginx:1.16.1 Pods. It does not wait for the 5 replicas of nginx:1.14.2 to be created before changing course.
+
+- 作成途中で変更があった場合は、途中で作成されたものは削除されて即座に新しいものが作成される
+
+> It is generally discouraged to make label selector updates and it is suggested to plan your selectors up front.
+
+- Label selector の変更は避けるべきで事前にちゃんと計画を立てるべき
+
+- deployment が長期的に revision を持っていることは知らなかった
+
+> CHANGE-CAUSE is copied from the Deployment annotation kubernetes.io/change-cause to its revisions upon creation. You can specify theCHANGE-CAUSE message by:
+
+- CHANGE-CAUSE は Deployment の annotation からコピーされるらしい
+
+> kubectl rollout undo deployment/nginx-deployment --to-revision=2
+
+- 上のように戻せるのね
+- ただ、CD の仕組みとか使っている場合はソースコードが SSOT だから結局はコードで示すことになりそうな気もする
+
+> You can set .spec.revisionHistoryLimit field in a Deployment to specify how many old ReplicaSets for this Deployment you want to retain. The rest will be garbage-collected in the background. By default, it is 10.
+
+- revisionHistoryLimit で保持するリビジョンの数を指定できる
+
+> If you want to roll out releases to a subset of users or servers using the Deployment, you can create multiple Deployments, one for each release, following the canary pattern described in managing resources.
+
+- canary したいなら二つの Deployment を作る必要あり
+  - argo-rollouts とか使うのも手であるらしい
+
+> All existing Pods are killed before new ones are created when .spec.strategy.type==Recreate.
+
+## ReplicaSet
+
+- ごちゃごちゃ書いてあるけど Deployment 使いましょう
+
+## StatefulSet
+
+- pv を使い回す
+- pod の識別子もしっかりしている
+- service は headless にすることで、特定の pod には同じ名前でアクセスできるようにする
+  - ただし service なので、普通の名前解決と同じように使える
+
+> When a StatefulSet's .spec.updateStrategy.type is set to OnDelete, the StatefulSet controller will not automatically update the Pods in a StatefulSet. Users must manually delete Pods to cause the controller to create new Pods that reflect modifications made to a StatefulSet's .spec.template.
+
+- めんどくさそう。どういう時に利用するタイプなのか？
+
+> When using Rolling Updates with the default Pod Management Policy (OrderedReady), it's possible to get into a broken state that requires manual intervention to repair.
+
+> If you update the Pod template to a configuration that never becomes Running and Ready (for example, due to a bad binary or application-level configuration error), StatefulSet will stop the rollout and wait.
+> In this state, it's not enough to revert the Pod template to a good configuration. Due to a known issue, StatefulSet will continue to wait for the broken Pod to become Ready (which never happens) before it will attempt to revert it back to the working configuration.
+> After reverting the template, you must also delete any Pods that StatefulSet had already attempted to run with the bad configuration. StatefulSet will then begin to recreate the Pods using the reverted template.
+
+- これあかんのでは？podTemplate を書き間違えてエラーにしてしまったら、podTemplate を更新して、手動で pod を削除しないといけないってこと？
+- でも確かにこの状況に陥ることは多々あった
+
+- PersistentVolumeClaim retention が新機能ぽいけど、Retention は今まで通りの機能で Delete が新しい機能っぽい
+
+## DaemonSet
+
+- spec.affinity.nodeAffinity で適切にノードに配置することができるっぽい
+- って書いてあったのに、describe してもそのようなフィールドはなかった
+- よくわからない
+
+> You can add your own tolerations to the Pods of a DaemonSet as well, by defining these in the Pod template of the DaemonSet.
+
+> Because the DaemonSet controller sets the node.kubernetes.io/unschedulable:NoSchedule toleration automatically, Kubernetes can run DaemonSet Pods on nodes that are marked as unschedulable.
+>
+> If you use a DaemonSet to provide an important node-level function, such as cluster networking, it is helpful that Kubernetes places DaemonSet Pods on nodes before they are ready. For example, without that special toleration, you could end up in a deadlock situation where the node is not marked as ready because the network plugin is not running there, and at the same time the network plugin is not running on that node because the node is not yet ready.
+
+- どのノードにもスケジュールできるようにしている
+- これにより、ノードが ready になる前に DaemonSet が配置されることがある
+- これはネットワークプラグインが動いていないノードにネットワークプラグインを配置するためのものなどかな
+
+## Job
+
+> There are three main types of task suitable to run as a Job:
+
+> Non-parallel Jobs
+> normally, only one Pod is started, unless the Pod fails.
+> the Job is complete as soon as its Pod terminates successfully.
+
+> Parallel Jobs with a fixed completion count:
+> specify a non-zero positive value for .spec.completions.
+> the Job represents the overall task, and is complete when there are .spec.completions successful Pods.
+> when using .spec.completionMode="Indexed", each Pod gets a different index in the range 0 to .spec.completions-1.
+
+> Parallel Jobs with a work queue:
+> do not specify .spec.completions, default to .spec.parallelism.
+> the Pods must coordinate amongst themselves or an external service to determine what each should work on. For example, a Pod might fetch a batch of up to N items from the work queue.
+> each Pod is independently capable of determining whether or not all its peers are done, and thus that the entire Job is done.
+> when any Pod from the Job terminates with success, no new Pods are created.
+> once at least one Pod has terminated with success and all Pods are terminated, then the Job is completed with success.
+> once any Pod has exited with success, no other Pod should still be doing any work for this task or writing any output. They should all be in the process of exiting.
+
+- よくわからん。。。
