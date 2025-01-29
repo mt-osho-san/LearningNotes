@@ -9,8 +9,7 @@
   - `k8s.io/` とか `kubernetes.io/` とか...
 - ラベルセレクターで、等価だけではなく不等や集合などで表現できるの知らなかったけど、表現方法がわからなかった
   - notin とか見たことない。。。
-  - そもそもそれ以外、とかで選択したことがオペレーション上あまりないからかな？
-  - 良く見たら表現方法あった
+  - そもそもそれ以外、とかで選択したことがオペレーション上あまりないからかな？ 良く見たら表現方法あった
   ```yaml
   selector:
   matchLabels:
@@ -456,3 +455,248 @@ volumes:
 > once any Pod has exited with success, no other Pod should still be doing any work for this task or writing any output. They should all be in the process of exiting.
 
 - よくわからん。。。
+
+## Service, LoadBalancer, and Networking
+
+> Pods can communicate with each other directly, without the use of proxies or address translation (NAT).
+
+- NAT とかを使わずにダイレクトに Pod 同士が通信できる
+
+> Agents on a node (such as system daemons, or kubelet) can communicate with all pods on that node.
+
+> The Service API lets you provide a stable (long lived) IP address or hostname for a service implemented by one or more backend pods, where the individual pods making up the service can change over time.
+
+- Service は安定した IP アドレスやホスト名を提供するためのものなので、Pod が変わっても問題ない
+
+> Kubernetes automatically manages EndpointSlice objects to provide information about the pods currently backing a Service.
+
+- EndpointSlice は Service にバックエンドとしている Pod の情報を提供するためのもの
+- Service 作成時に自動で作成されるから、人間はあまり意識するものではないのかも(意識したことない)
+
+> A service proxy implementation monitors the set of Service and EndpointSlice objects, and programs the data plane to route service traffic to its backends, by using operating system or cloud provider APIs to intercept or rewrite packets.
+
+- いきなり service proxy とか出てきたけど何もん？
+  - kube-proxy のことだった
+  - ただ、Proxy とか使わないでいいんじゃなかったけ？
+  - もう少し理解必要
+
+> Kubernetes's model is that pods can be treated much like VMs or physical hosts from the perspectives of port allocation, naming, service discovery, load balancing, application configuration, and migration.
+
+- これいい例えかも。VM とかのサイズをコンテナレベルにしただけみたいな。K8s 導入の説明とかでも使えそう
+
+> For the other parts, Kubernetes defines the APIs, but the corresponding functionality is provided by external components,
+
+- この Plugin 的なところが K8s の面白さ
+- kube-proxy はデフォルトだけど、ものによっては他のものを使うこともできる
+
+## Service
+
+> Each Pod gets its own IP address (Kubernetes expects network plugins to ensure this).
+
+- cni が Pod に IP アドレスを割り当てるのか
+
+> Port definitions in Pods have names, and you can reference these names in the targetPort attribute of a Service. For example, we can bind the targetPort of the Service to the Pod port in the following way:
+
+- 普通に知らなかった。いつもポート番号指定していたので、こっちの方がわかりやすいし、変更に強いかも
+
+- あえて selector による指定をせずに Service を作成し、EndpointSlice の endpoints を手動で指定することで、Service を利用しつつも任意のアドレスに通信を行うことができるので、移行中や、別環境指定などの用途で利用できるみたい
+
+> EndpointSlices are objects that represent a subset (a slice) of the backing network endpoints for a Service.
+
+- Endpoints に紐づいている pod が 1000 を超えると切り捨てる？
+
+> The mapping configures your cluster's DNS server to return a CNAME record with that external hostname value. No proxying of any kind is set up.
+
+- ExternalName は DNS サーバーに CNAME レコードを返すように設定する Service なので、Service を使って外部のサービスにアクセスするときに使うのかな
+
+> You can specify your own cluster IP address as part of a Service creation request.
+
+- 手動設定も可能
+
+- ExternalName の例で db の接続があったけど、確かに db に対して使えるな
+- db はマネジどサービスでもそこまでの経路は k8s として管理可能になるって感じか
+
+  - そしてうまくいけば db も k8s に乗せることができる
+
+- ただし HTTP のような HOST を機にするやつに使うと予期せぬことがこったりするよとのこと
+
+  - これはおそらく HTTPS の証明書とかでもエラーが起きるのじゃないかな？
+
+- 環境変数に Service の IP とかが載っているのは知らなかった
+- これは Docker Engine の legacy container links をサポートするためのもの？
+- デプロイ順序とか気をつけないといけないみたいで、そもそも DNS に任せた方が良いのかも
+
+> You can (and almost always should) set up a DNS service for your Kubernetes cluster using an add-on.
+
+- ほぼ必須なので DNS サービスをセットアップしましょう
+
+> A cluster-aware DNS server, such as CoreDNS, watches the Kubernetes API for new Services and creates a set of DNS records for each one.
+
+- kubernetes API を監視して DNS レコードを作成している感じみたい
+
+  - ってことは速攻で変更されるのかな？
+  - DNS のキャッシュとかどうなるんだろう？
+  - というか kube-proxy との違いが分からんくなってきたけど、DNS は service の名前解決で、kube-proxy は名前解決された service の ip をどこに転送するかのルールを設定するのかな？
+
+- ExternalIPs は Service の IP に対して、外部からアクセスできるようにするためのものっぽい
+  - ただ、k8s は Ip 割り当てとかを行わないので、IP が存在することは自分で担保しないといけない感じかな？
+
+## Virtual IPs and Service Proxies
+
+> Every node in a Kubernetes cluster runs a kube-proxy (unless you have deployed your own alternative component in place of kube-proxy).
+
+> The kube-proxy component is responsible for implementing a virtual IP mechanism for Services of type other than ExternalName.
+
+- ExternalName 以外の Service に対して仮想 IP を実装するのが kube-proxy の役割
+
+> kube-proxy watches the Kubernetes control plane for the addition and removal of Service and EndpointSlice objects.
+
+- DNS に任せるのはキャッシュは TTL があるので、変更が遅れることがあ理、Pod のようなすぐに死ぬようなものには向かない？
+
+> Overall, you should note that, when running kube-proxy, kernel level rules may be modified (for example, iptables rules might get created), which won't get cleaned up, in some cases until you reboot.
+
+- node の kernel level に対して変更を加える見たい
+- iptables mode では Service の変更のたびに iptables にルールを追加するみたい
+
+  - そして dnat して service に転送するみたいな感じ？
+
+- etcd とかに IP アドレスを保存して、unique な IP アドレスを割り当てたり、k8s のコントロールプレーンが掃除をしているらしい
+
+## Ingress
+
+> Ingress exposes HTTP and HTTPS routes from outside the cluster to services within the cluster. Traffic routing is controlled by rules defined on the Ingress resource.
+
+> You must have an Ingress controller to satisfy an Ingress. Only creating an Ingress resource has no effect.
+
+- annotation で 特定の機能を利用できるようにすることができるみたいだけど、ingress の controller によって機能が異なるので、ここは spec でカバーできなかったのか？と思うところ
+
+- default ingress class という指定も可能らしく、ingressClassName を入れないとそうなるみたい
+
+  - ただ、おそらく、ingressClass の annotation で default ingress class であることを指定するので、ingressClass が不要ということではないと思う
+
+- と思ったけど ingress によっては default の定義なしで動くとか書いてあった
+
+  - よく分からん
+
+- defaultBackend というルールを適用せずに全てのリクエストを受け付けることもできるみたい
+- service リソース以外に対しても resource として指定できるみたい
+- TLS 終端前提で https のサポートが可能っぽい
+  - ただし 443 ポートしか使えないっぽい
+
+## Ingress Controllers
+
+- Ingress 使うには Controller の設定が必要
+- Ingress Controller の指定には IngressClass が使われる
+  - IngressClass に ingressclass.kubernetes.io/is-default-class: "true" という annotation をつけることでデフォルトの IngressClass になる
+
+## Gateway API
+
+- Ingress の後継で、role ベースで、Ingress と違って、様々な責務がリソースごとに分離している
+- また、header based matching や traffic weighting など、ingress ではれば annotation で個別対応するようなやつも対応できる
+
+- GatewayClass と Gateway と XXXRoute のリソースで分かれている
+- GatewayClass で controller を指定して、Gateway でエンドポイントを待ち受けて,Route でパスやヘッダーなどのマッチングで振り分ける
+
+## EndpointSlices
+
+> The EndpointSlice API is the mechanism that Kubernetes uses to let your Service scale to handle large numbers of backends, and allows the cluster to update its list of healthy backends efficiently.
+
+- Service が大量のバックエンドを扱うための API で、クラスタが効率的にバックエンドのリストを更新できるようにするためのもの
+
+> In Kubernetes, an EndpointSlice contains references to a set of network endpoints.
+
+> The control plane automatically creates EndpointSlices for any Kubernetes Service that has a selector specified.
+
+- selector が指定されている時だけなんか？
+
+> By default, the control plane creates and manages EndpointSlices to have no more than 100 endpoints each. You can configure this with the --max-endpoints-per-slice kube-controller-manager flag, up to a maximum of 1000.
+
+- これって、1000 個以上の Pod を冗長化のために利用したい場合はどうなるのか？
+
+> Most often, the control plane (specifically, the endpoint slice controller) creates and manages EndpointSlice objects. There are a variety of other use cases for EndpointSlices, such as service mesh implementations, that could result in other entities or controllers managing additional sets of EndpointSlices.
+
+- endpoint slice controller が管理しているが、service mesh などの実装によっては他のエンティティやコントローラが管理することもあり、管理している EndpointSlice に特定の label をつける必要があるみたい
+
+- endpoint slice の変更は kube-proxy 経由で全ての node に達するので思い処理
+
+- 難しくて、日本語にしてもよく分からんかった
+
+- なんで endpoints が必要なのかが分からなかった。古い仕組みだからまだ依存している仕組みがあるのかな？
+
+## Network Policies
+
+- L3,L4 レベルのネットワーク制御の仕組み
+- Pod が通信できるエンティティは 3 つの識別子の組み合わせによって識別される
+
+  - 許可されている他の Pod
+    - selector によって指定できるっぽい
+  - 許可されている NS
+  - IP ブロック
+
+- NetworkPolicy は CNI によって提供されるので CNI がそもそも NetworkPolicy をサポートしている必要がある
+- NetworkPolicy が同じ NS にあると、基本的に Pod は通信を拒否するみたい
+- ポリシーは和集合で評価されるので、評価順序はポリシーの結果に影響しない
+
+- policyType と ingress,egress というフィールドがあるけど、ingress,egress というフィールドで設定するならわざわざ policyType を設定する必要があるのかな？
+
+- ipBlock の用途は外部サービス向けみたい
+
+- podSelector の値を空にして全ての Pod を対象にし、policyTypes だけを指定すると、その policyTypes に対して全ての Pod に適用される
+
+  - デフォルトで全て拒否みたいになる
+
+- 上のポリシーの ingress に空を入れると、全ての 通信を受け付ける
+- ポリシーは追加方式なので、他の NetworkPolicy が当たっている場合はそのポリシーも適用される
+- なので、デフォルトのポリシーを設定しておくと、NetworkPolicy で明示的に指定されていない Pod に対してもポリシーが適用されるので良いよねみたいな感じ
+- SCTP って何？
+
+## DNS for Services and Pods
+
+- namespace が同じなら service name で、違うなら、service_name.namespace_name で service の名前解決ができる
+
+- srv レコードは名前付きポート向けに作成されるみたい
+  - 名前付きポートって、yaml を解釈するときに実際に値をつけると思っていたけど、srv レコードを使って解決するものなのか？
+- pod の dns は pod-ip.namespace.pod.cluster.local で解決される
+  - これでも解決する必要ある？すでに ip が名前にあるやん
+- 一応 pod の spec で hostname とか subdomain を指定でき、それが FQDN の要素になることもできるみたい
+
+- Pod が利用する DNS サーバーなどの設定を dnsConfig で指定できるみたい
+
+## IPv4/IPv6 Dual-Stack
+
+- 名前の通りで、Pod ごとに v4,v6 のアドレスを持つことができるようになるみたい
+- CNI やプロバイダーがそもそも対応していないと使えないっぽい
+- プライベート IP が割り当てられる k8s において v6 を使えることって何が嬉しんんだろう？
+- あんまり v6 のメリットがわからん
+
+## Topology Aware Routing
+
+- トラフィックの意地によるコスト削減やパフォーマンス向上が目的みたい
+- EndpointSlice は Service の endpoint を計算する際に各 endpoint のトポロジー(region と zone)を考慮し、ゾーニ割り当てるためのヒントフィールドに値を入力する
+- そして kube-proxy はこのヒントを利用して、近い endpoint を優先したりするようになるみたい
+
+- 特的の annotation を auto にすると service に対して設定できて、トラフィックを発信元の近くにルーティングできるみたい
+- 受信トラフィックが特定のゾーンに偏っている場合、この機能によりルーティングも偏ってしまうのでおすすめしないとのこと
+- 1 つのゾーンに 3 つ以上の endpoint を持つ必要があるみたい
+
+  - そうでないとルーティングに偏りが生じるみたい
+
+- kube-proxy は endpointslice コントローラーによって設定されたヒントに基づいてルーティング先の endpoint をフィルター処理するみたいで、これによって、同じゾーン内の endpoint にトラフィクをルーティングできる
+
+- セーフガードという概念もあるみたく、これらがチェックアウトされない場合は kube-proxy はゾーンに関係なくクラスター内のどこからでも endpoint を選択するみたい
+
+- 制約事項もいくつかある
+
+## Service ClusterIP allocation
+
+- クラスターの DNS Service は Service の IP 範囲の十番目のアドレスらしい
+
+- 確かにそうだった
+
+```
+kube-dns       ClusterIP   10.96.0.10      <none>        53/UDP,53/TCP,9153/TCP   6d21h   k8s-app=kube-dns
+```
+
+## Service Internal Traffic Policy
+
+## Volume
