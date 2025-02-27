@@ -700,3 +700,111 @@ kube-dns       ClusterIP   10.96.0.10      <none>        53/UDP,53/TCP,9153/TCP 
 ## Service Internal Traffic Policy
 
 ## Volume
+
+- 基本は emptyDir
+  - Pod が削除されると削除されるけど、Node がバックアップされている場合は削除されない？？
+  - emptyDir.medium が Memory の場合は tmpfs で作成され、高速だが、ノードのリブートで削除されると、対比のように書かれていたため
+- hostPath は host のファイルをマウントするのでセキュリティリスクあり
+- host 上に作成されたファイルやディレクトリは特権コンテナか、ファイルのパーミッションを変更する必要がある
+  - コンテナのホスト上の userid とかって指定できるんだっけ？
+- local ボリュームがよくわからない。hostPath との違いは？
+
+  - pvc かどうかってこと？
+  - nodeAffinity を設定する必要があるらしい
+
+- nfs ボリュームってのもあるのね
+
+  - このデータ自体はどこにあるのか？特定の Node にあるのか？
+
+- というか、ボリュームの種類が多すぎてよくわからん
+
+  - これは Copilot の補完笑同じ気持ち
+
+- PersistentVolume のとこ見ると、クラスター管理者は様々な用途向けの pv を用意する必要があるみたいなこと考えていて、なかなか大変だな
+
+- StorageClass を使えば動的プロビジョニングできる
+- DefaultStorageClass を有効化するには API サーバーのフラグを変更する必要があるのか？
+
+  - そもそもフラグをコマンド区切りで追加するってことは Default という名前だけど、Default で選択されるものではない？
+
+- PV と PVC は 1 対 1 の紐づき
+- PVC を Pod が使っていると、PVC を削除しても Pod が PVC を使用しなくなるまで削除されない
+- StorageClass をからにして、volume 指定、pv 側でも calimRef を指定すると pv の予約ができるポイ
+- ものによっては pv を拡大できるっぽい
+- ただ、拡張が失敗すると、手動切り戻しが必要になるっぽい
+
+## Configurations
+
+> Don't specify default values unnecessarily: simple, minimal configuration will make errors less likely.
+
+- なるほど。いらんことはするなってことか
+
+- yaml 1.1 では yes,no,on,off,true,false が使えるってのは驚き
+
+## ConfigMap
+
+- 容量は 1MB まで
+- data と binaryData がある
+
+  - どちらも key-value
+  - binaryData は binary を base64 エンコードされている
+
+- namespace またぎで使うことはできない？？？
+
+  - 共通の config とかありそうっちゃありそうだけどな
+
+- ConfigMap の値が変わると自動でマウントされている値も変わる
+  - ただし、キャッシュなどの遅延は考慮すること
+  - また、環境変数として設定した場合は、Pod の再起動が必要
+
+## Secrets
+
+- secret はデフォルトで暗号化されずに etcd に保存される
+- Pod を作成できるのであれば secret をマウントすることもできる
+- 安全に使用したければ
+
+  - 暗号化
+  - RBAC でのアクセス制御
+  - 特定コンテナのみの Secret アクセスの制御
+  - 外部 SecretStore の利用
+    - ただ、これしてしまったら k8s の美味さがないのでは？
+
+- secret には組み込みのタイプがあって、それに合わせてデータ作成とかしてくれるっぽい？
+- imagePullSecrets に secret を入れれば private な registry からイメージを pull できるっぽい
+
+## Liveness, Readiness, and Startup Probes
+
+- LivenessProbe は いつコンテナをリスタートするか決めるもの
+
+  - コンテナ自体は生きているが、デッドロックなどで止まっているのを検知する
+
+- ReadinessProbe はコンテナが準備ができているかどうかを検知する
+- startupprobe を設定すれば、こいつが成功するまで、livenss,readiness は評価されない
+  - liveness,readiness と違って、この probe は一度限りしか実行されない
+
+## Resource Management for Pods and Containers
+
+- cgroup で cpu と memory を制御する感じ
+- 制限をコスト OOM エラーでプロセスを終了させるみたい
+- API Resource と、cpu,memory の違いが書いてあったけどよくわからん
+- hugepages もよくわからん
+
+  > コンテナがメモリー制限を超過すると、終了する場合があります。
+
+- つまり終了しない場合もあるってこと？
+
+> コンテナは、長時間にわたって CPU 制限を超えることが許可される場合と許可されない場合があります。 ただし、CPU の使用量が多すぎるために、コンテナが強制終了されることはありません。
+
+- ここら辺もよくわからん
+- feature gate を on にするとローカルストレージの使用量を測定できる？
+- ローカルストレージのリクエストと limit をかけることも可能っぽい
+- 拡張リソースの話は全くわからん
+
+## kubeconfig
+
+- kubeconfig ファイルの評価順が載っている
+
+  - 困ったら見ると良いかも
+
+- proxy も使えるとのこと
+  - 前職が懐かしい。。
