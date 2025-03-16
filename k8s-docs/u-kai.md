@@ -808,3 +808,441 @@ kube-dns       ClusterIP   10.96.0.10      <none>        53/UDP,53/TCP,9153/TCP 
 
 - proxy も使えるとのこと
   - 前職が懐かしい。。
+
+## Security
+
+- Cloud,Cluster,Container,Code の 4C でセキュリティを考える
+
+## Pod Security Standards
+
+- Pod に対しては Security Context を指定することでセキュリティを強化できる
+- ポリシーの項目では禁止すべき一覧が書いてあり、わかりやすい
+
+  - host プレフィックスや privileged,capabilities は on にしたり、追加したりするなって感じかな
+  - こういうルールを PaC とかでやれたらいいのかな〜
+
+- AppArmor とか SELinux とかよく出てくるけどあまり理解していない
+
+  - これらのフィールドに対しても制限するべきことが書いてある
+
+- 攻撃対象を縮小するため/proc のマスクを設定し、必須とすべきです。の意味がわからなかったけど、GPT 曰く、Unmasked という値を設定すると、/proc の値がみれるみたいなので、よくにらしい
+- Seccomp はシステムコールの制限を行うもので、それを禁止にするようなことはするなという感じ
+
+> ポリシーの定義とポリシーの実装を切り離すことによって、ポリシーを強制する機構とは独立して、汎用的な理解や複数のクラスターにわたる共通言語とすることができます。
+
+- 実装は別でやれよってこと？
+  - 実装であった Pod Security Policy は廃止されている
+  - Pod Security Admission か 3rd party でやりましょうって話みたい
+
+## Cloud Native Security
+
+- この章はそれぞれのステップでどのようなセキュリティを考えるべきかが書いてある
+- ファジングやカオスエンジニアリングのようなセキュリティテストも重要
+- ResourceQuotas の定義ってどうやってギリギリいっぱいいいところを見つけるのかな？
+  - こういう取り組みって挑戦的で面白そう
+  - 監視をうまいこと戦略的にしていくしかない？
+
+> 異なるノード間でワークロードを分割します。 Kubernetes 自体またはエコシステムのいずれかからノードの分離メカニズムを使用して、異なる信頼コンテキストの Pod が別個のノードセットで実行されるようにします。
+
+- まさにそうではあるけど、分離すべきものを定義するのがむずそう
+
+  - どのような観点でノード分離すべきなのかな？
+  - 何も考えなかったら様々なノードに様々な Pod が配置されるけど、それじゃまずいのってどんな時だろ
+
+- 暗号化キーはハードウェアセキュリティモジュールに保存するのが良いらしいく、セキュリティキーを他の場所にコピーすることなく暗号化操作を実施できるとあるけどなんで？
+
+  - セキュリティ的に良くなるのはわかる
+
+- サービスメッシュとか使って mtls で通信暗号化したら、他のセキュリティ対策はいらないのかな？
+  - アプリケーションの通信は全て http でも良い？
+
+## Pod Security Admission
+
+- PodSecurityPolicy は 1.25 で廃止されているので、その後継
+
+> Pod のセキュリティアドミッションは、Pod の Security Context とその他の関連フィールドに、Pod セキュリティの標準で定義された 3 つのレベル、privileged、baseline、restricted に従って要件を設定するものです
+
+- 名前空間ごとに admission controller を設定するみたい
+- label を指定することで、どのレベルのセキュリティポリシーを適用するかを指定できる
+- 以下のような感じで設定できるみたい
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: my-baseline-namespace
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: v1.32
+
+    # We are setting these to our _desired_ `enforce` level.
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: v1.32
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.32
+```
+
+> ポリシーに違反した場合は、ユーザーへの警告がトリガーされますが
+
+- 上のように書いてあるが、ユーザーへの警告って何？kubectl で操作した時に警告が出るのかな？
+- ポリシー適用の除外もできる
+
+  - 除外リストを静的に書く必要がある
+  - 認証されていないユーザー名って書いてあったけど、認証されていないのにユーザー名ってどうやってわかる？
+
+  > ほとんどの Pod は、ワークロードリソースに対応してコントローラーが作成します。つまり、エンドユーザーを適用除外にするのは Pod を直接作成する場合のみで、ワークロードリソースを作成する場合は適用除外になりません。 コントローラーサービスアカウント(system:serviceaccount:kube-system:replicaset-controller など)は通常、除外してはいけません。そうした場合、対応するワークロードリソースを作成できるすべてのユーザーを暗黙的に除外してしまうためです。
+
+  - ってことはユーザー名による除外はほとんど意味がない？
+
+- 数は少ないが、フィールドが更新されてもポリシー適用が無視されるフィールドもあるみたい
+
+## ServiceAccount
+
+- 人間以外のアカウントで、Pod や、クラスター内外のエンティティは ServiceAccount を使って認証することができる
+- 各 namespace に対して default という名前の service account が自動で作成される
+- RBAC が有効の場合はデフォルトの権限を与える？
+- namespace の default service account を削除すると自動で service account オブジェクトを作成するとあるので、default は事実上消せないのかな
+- 内部から k8sAPI にアクセスする場合や、外部のシステムからアクセスする場合に使えるみたい
+
+  - また、内部から外部にアクセスする時も使える？(GitHub Actions の OIDC 連携みたいな？)
+
+- Role を付与すると RBAC を達成できる
+
+  - 上でいっている RBAC とは違うのかな？
+
+- TokenRequest API や、ServiceAccountTokenVolumeProjection を使うことで、認証情報を取得することができる
+  - projection の方であれば、kubelet によって自動で更新されるから楽なのかな？
+- ServiceAccountSecret のやり方は非推奨
+
+  - 静的な secret は使わないほうがいい
+
+- TokenRequest は外部からでも使える？？ただ、認証情報取得するものなのに、外部のように認証しずらいものにどうやって渡すのかな？鶏卵みたいになるのでは？
+  - おそらく、内部のワークロードで TokenRequest をして、その結果を外部に渡すような使い方をするのかな？
+- 外部のシステムを認証する場合は証明書の認証か独自実装した Webhook 認証を使いましょうとのこと
+- Service Account は署名された Jwt を使用して認証するみたい
+
+> 1. トークンの署名を確認します。
+> 1. トークンが期限切れかどうかを確認します。
+> 1. トークン要求内のオブジェクト参照が現在有効かどうかを確認します。
+> 1. トークンが現在有効かどうかを確認します。
+> 1. オーディエンス要求を確認します。
+
+- 上の手順、2 までしかわからん。オブジェクト参照とかオーディエンス要求って何？
+
+  - gpt に教えてもらった
+
+  ```
+      手順	何を確認するか？
+    ✅ 1. 署名を確認	トークンが正しく署名され、改ざんされていないか。
+    ✅ 2. 期限切れか確認	exp フィールドのチェック（トークンが期限切れでないか）。
+    ✅ 3. オブジェクト参照を確認	ServiceAccount が削除されていないか。
+    ✅ 4. トークンの有効性を確認	Kubernetes の内部管理上、トークンがまだ有効か。
+    ✅ 5. オーディエンスを確認	aud (audience) が API の要求と一致するか。
+  ```
+
+- 外部サービスなどが ServiceAccount の正当性を k8sAPI に問い合わせるときの推奨は TokenReviewAPI
+- OIDC と違って、ServiceAccount が無効になったり、対象の Pod が死んだ時はそれを検知して即座に無効な値を返す
+- 独自のトークンを発行し、Webhook トークン認証を使用するとかもできるみたい？
+  > SPIFFE CSI ドライバープラグインを使用して、SPIFFE SVID を X.509 証明書ペアとして Pod に提供します。
+- SPIFFE ってセキュリティのプロトコルの規格みたいな感じだったような気がするけどなんもわからん笑
+- isito などのサービスメッシュで証明書も使えるよねということ
+
+  - ServiceAccount を使うと K8s に負荷がかかるからそこは確かに心配だった
+  - そもそも k8s を認証基盤として使うのは違うと思うし
+
+> Device Plugin を使用して仮想 Trusted Platform Module (TPM)にアクセスし、秘密鍵を使用した認証を許可します。
+
+- このやり方は渋い
+
+## Controlling Access to the Kubernetes API
+
+- TLS を使って k8sAPI にアクセスするのが基本
+- その際の証明書の発行は private CA など引数で渡せる
+
+- アクセスは、認証、認可、AdmissionControl の順で評価される
+
+> While Kubernetes uses usernames for access control decisions and in request logging, it does not have a User object nor does it store usernames or other information about users in its API.
+
+- ではどうやって認証する？署名とかを使うってこと？
+
+- 認可モジュールには ABAC,RBAC,Webhook があるみたい
+- 複数選択すると、複数で評価されるみたい
+- AdmissionControl はリクエストの変更と拒否ができるみたい
+
+- Auditing もあるみたいで、security 関連や時系列のレコードを提供してくれるみたい
+
+## Role Based Access Control Good Practices
+
+> system:unauthenticated グループのバインディングを確認し、可能であれば削除します。 これにより、ネットワークレベルで API サーバーに接続できるすべてのユーザーにアクセスが許可されます。
+
+- アクセスが許可されて良いの？
+
+- Secret への get 系を許可すると、secret の中身が見れるので、注意
+- Pod などのワークロードリソースを作成する権限を渡すと、Secret,ConfigMap,PersistentVolume などの Pod にマウントできる他の多くのリソースへのアクセスが暗黙的に許可されるらしい。。。
+
+  > 特権付き Pod を実行できるユーザーは、そのアクセス権を使用してノードへのアクセスを取得し、さらに特権昇格させる可能性があります。 適切に安全で隔離された Pod を作成できるユーザーや他のプリンシパルを完全に信頼していない場合は、ベースラインまたは制限付き Pod セキュリティ標準を強制する必要があります。
+
+- 確かに...
+
+> 誰か、または何らかのアプリケーションが、任意の PersistentVolume を作成する権限を持っている場合、そのアクセスには hostPath ボリュームの作成も含まれており、これは Pod が関連づけられたノードの基盤となるホストファイルシステムにアクセスできることを意味します。 その権限を与えることはセキュリティリスクとなります。
+
+> PersistentVolume オブジェクトを作成する権限を許可するのは、次の場合に限定するべきです:
+
+> ユーザー(クラスター運用者)が、作業にこのアクセスを必要としており、かつ信頼できる場合。
+> 自動プロビジョニングのために設定された PersistentVolumeClaim に基づいて PersistentVolume を作成する Kubernetes コントロールコンポーネント。 これは通常、Kubernetes プロバイダーまたは CSI ドライバーのインストール時に設定されます。
+
+- なるほど
+- 信頼できる場合、ってのが面白い笑いきなり性善説
+
+- escalate 権限を持っていると、特権昇格ができるので、これは注意が必要
+- bind も、権限をバインドできてしまうってことかな？
+- impersonate は他のユーザーになれるってことらしいけど、原理が全くわからん
+- 「CSR の作成」と「CSR の承認 (Approval)」を両方できるユーザーは、新しいクライアント証明書を好きなだけ作れる。ってこと？
+
+> validatingwebhookconfigurations または mutatingwebhookconfigurations を制御するユーザーは、クラスターに許可された任意のオブジェクトを読み取ることができるウェブフックを制御し、ウェブフックを変更する場合は許されたオブジェクトも変更できます。
+
+> Namespace オブジェクトにおいて patch 操作を実行できるユーザーは(そのアクセス権を持つロールへの namespace 付きの RoleBinding を通じて)namespace のラベルを変更できます。 Pod のセキュリティアドミッションが使用されているクラスターでは、ユーザーは管理者が意図したより緩いポリシーを namespace に設定できる場合があります。 NetworkPolicy が使用されているクラスターでは、ユーザーは管理者が意図していないサービスへのアクセスを間接的に許可するラベルを設定できる場合があります。
+
+- 確かに。。label でセキュリティや機能を制御することは多いので、これは注意が必要
+
+--- 3-7
+
+> クラスター内のオブジェクトを作成する権限を持つユーザーは、etcd used by Kubernetes is vulnerable to OOM attack で議論されているように、オブジェクトのサイズや数に基づいてサービス拒否を引き起こすほど大きなオブジェクトを作成できる可能性があります。 これは、半信頼または信頼されていないユーザーにシステムへの限定的なアクセスが許可されている場合、特にマルチテナントクラスターに関係する可能性があります。
+
+- これも確かに。オープンに公開できるものではないな。。。簡単にぶっ壊せそう
+- 抜け道が多くてなかなか大変。組み込みの PaC とかあればいいな
+
+> 使用しなくなった場合には、etcd が使用する永続ストレージを削除するかシュレッダーで処理してください。
+
+- シュレッダー？笑
+
+> Kubernetes Secrets Store CSI Driver は、kubelet が外部ストアから Secret を取得し、データにアクセスすることを許可された特定の Pod に Secret をボリュームとしてマウントする DaemonSet です。
+
+- ExternalSecrets はしっていたけど、直接外部ストアから取得するのは初めて知った
+  - ただ、これだと Secret への API アクセスはどうなるのかな？
+  - Pod にマウントしたらそれっきり？そもそもマウントするのか？
+
+## Multi-tenancy
+
+- tenant ってチームのコンテキストだったり、顧客のコンテキストだったりするっぽい
+
+  - 後者しか知らなかった
+
+- 強力な分離はセキュリティ的には良いけど、運用コストとかはかかるからそことの比較検討が重要
+
+> In fact, a common practice is to isolate every workload in its own namespace, even if multiple workloads are operated by the same tenant. This ensures that each workload has its own identity and can be configured with an appropriate security policy.
+
+- やっぱり ns でわけたほうが良さそう
+- ns を分けることで、権限管理も細かくできるようになる
+- Resource Quota でリソースの制限もしっかりやらないと node のシェアとかはできない
+- これも ns でわけられる
+
+> Quotas cannot protect against all kinds of resource sharing, such as network traffic. Node isolation (described below) may be a better solution for this problem.
+
+- ネットワークのポリシーも ns などで厳格に制御しましょう
+- L7 のサービスメッシュで制御したらなお良いよね
+
+- pv は動的プロビジョニングで取得して、node リソースに紐づけるのはやめましょう
+- テナントごとに StorageClass を設定することで分離を強化できる
+
+- サンドボックス化というものがあるのか
+  - これは手法自体ないろんな実装があって、こういうプラクティスをすることで、信頼できないリクエストを安全に処理できるって言いたいのかな？
+
+> While controls such as seccomp, AppArmor, and SELinux can be used to strengthen the security of containers, it is hard to apply a universal set of rules to all workloads running in a shared cluster. Running workloads in a sandbox environment helps to insulate the host from container escapes, where an attacker exploits a vulnerability to gain access to the host system and all the processes/files running on that host.
+
+- なるほど。AppArmor とかは強力だけど、おそらく node が対象だから、これら全てを適用するのはむずいので、サンドボックス化することで、コンテナのエスケープを防ぐってことかな
+- gVisor ,Kata Containers などがあるらしい
+
+  - syscalls を userspace kernel でやってしまうのかな？
+
+- node 隔離の方がサンドボックスかされたコンテナよりも課金の考慮が簡単だったり、互換性やパフォーマンスの問題も少ないので実装が簡単
+- node selectors を使うのはわかるけど Virtual Kubelet って何？
+- QoS を k8s で定義できるから、顧客へのプランもうまいことできる
+- ネットワークの QoS をかけとかないと、帯域を共有して食い潰す可能性がある
+- ストレージの QoS はパフォーマンス特性の異なるストレージを作れるので、コスト最適化やワークロード最適化ができる
+- Pod の優先順づけもでき、これによって、リソースが枯渇している時に、優先的にスケジュールしたい Pod を設定できる
+
+> For example, CoreDNS (the default DNS service for Kubernetes) can leverage Kubernetes metadata to restrict queries to Pods and Services within a namespace.
+
+- これはしらなかった。ただ、こういうのどこまでやった方が良いのかなと思ってしまう
+  - NetworkPolicy や L7 の認可だけではダメ？
+  - おそらく、名前解決できないだけで、ip アドレス直打ちしたら通じる
+  - それであれば NetworkPolicy とか L7 で制御していればよくないか？
+  - DNS 封じは管理コストにしかならないのでは？
+
+> There are two primary ways to share a Kubernetes cluster for multi-tenancy: using Namespaces (that is, a Namespace per tenant) or by virtualizing the control plane (that is, virtual control plane per tenant).
+
+- Virtual control plane とな。。。
+
+> Control plane virtualization allows for isolation of non-namespaced resources at the cost of somewhat higher resource usage and more difficult cross-tenant sharing. It is a good option when namespace isolation is insufficient but dedicated clusters are undesirable, due to the high cost of maintaining them (especially on-prem) or due to their higher overhead and lack of resource sharing. However, even within a virtualized control plane, you will likely see benefits by using namespaces as well.
+
+- 占有クラスタと ns の間って感じか
+
+> it is a best practice to give each namespace names that are unique across your entire fleet (that is, even if they are in separate clusters), as this gives you the flexibility to switch between dedicated and shared clusters in the future, or to use multi-cluster tooling such as service meshes.
+
+- これって、クラスタが違くても同じ ns 名であれば、その中のリソース名は一意であれって事?
+
+- HNC というものがあるみたいで、ns を階層的に整理できう r のかな
+- マルチチーム、マルチ顧客シナリオで役に立つみたい
+
+  - ちなみに顧客ごとに ns 分ける？それだとやりすぎだから plan ごとに分けるのかな？
+
+- Kubeplus というマルチ顧客テナント向けのツールがあるらしい
+- Capsule はマルチチームテナント向け
+
+## Hardening Guide - Authentication Mechanisms
+
+- Client 証明書を使ったユーザー証明書は本番用途では適さない(ただし、kubelet では使っているみたい？)
+
+  > Client certificates cannot be individually revoked.
+  > Using client certificate authentication requires a direct connection from the client to the API server without any intervening TLS termination points, which can complicate network architectures.
+
+        - なるほど。
+
+- 静的トークンも適さない
+- Bootstrap token は node が join する時に使うもので、これも適さない
+
+- ServiceAccount や TokenRequest API Token はトークンの取り消し方法がないので、ユーザー認証には推奨されない s、資格情報を安全に配布するのも難しい
+
+- k8s は OIDC サポートしているが、考えるべきこともある
+
+  - OIDC 認証をサポートするためにクラスタにインストールされたソフトウェアは、高い権限で実行されるため、一般的なワークロードから分離する必要があり
+  -
+
+> Webhook token authentication is another option for integrating external authentication providers into Kubernetes. This mechanism allows for an authentication service, either running inside the cluster or externally, to be contacted for an authentication decision over a webhook. It is important to note that the suitability of this mechanism will likely depend on the software used for the authentication service, and there are some Kubernetes-specific considerations to take into account.
+
+- OIDC に関わらず、認証サービスと連携できるけど、一から作り込む必要がありそう...
+- しかもコントロール p るえーんのファイルシステムへのアクセスが必要みたいで、マネージドサービスだときついかもらしい
+- できたとしてもめちゃ強い権限のサービスになるから、セキュリティ的には厳しい
+
+> Another option for integrating external authentication systems into Kubernetes is to use an authenticating proxy. With this mechanism, Kubernetes expects to receive requests from the proxy with specific header values set, indicating the username and group memberships to assign for authorization purposes. It is important to note that there are specific considerations to take into account when using this mechanism.
+
+- ヘッダーだけに依存するようになるから webhook よりも簡単で権限も不要？？
+- ただ、ヘッダーなんて誰でも変えられるから、気をつけろやとのこと。確かに
+
+  - 署名は必要だな
+
+- そもそも、ユーザーを認証したい時ってどんな時？開発者が k8s にアクセスする時とかってこと？
+- そして、結局何が良いのか？OIDC が無難かな
+- EKS とかだと、AccessEntity というやつで、IAM と K8s の Role を紐づけることができるから、これを使えば良い気がする
+
+## Kubernetes API Server Bypass Risks
+
+- Static pods は特定の dir や url から kubelet が作成するかつ、kubeapiserver は関与しないので、特定 dir への攻撃が可能な場合はシャドーな pod が作成される可能性がある
+- Static Pod は他のオブジェクトへのアクセスが制御されているらしいが、hostPath などをマウントできるのでそこから攻撃できる
+
+> By default, the kubelet creates a mirror pod so that the static Pods are visible in the Kubernetes API. However, if the attacker uses an invalid namespace name when creating the Pod, it will not be visible in the Kubernetes API and can only be discovered by tooling that has access to the affected host(s).
+
+- ワロタ。というか StaticPod って名前空間なし(or 不正な名前空間)で作れるのか？
+
+> Only enable the kubelet static Pod manifest functionality if required by the node.
+
+- こういうことができるのね
+
+> Regularly audit and centrally report all access to directories or web storage locations that host static Pod manifests and kubelet configuration files.
+> The
+
+- こういう、監査、監視すべきコンポーネント一覧とかがないと k8s むずい
+
+> Direct access to the kubelet API is not subject to admission control and is not logged by Kubernetes audit logging. An attacker with direct access to this API may be able to bypass controls that detect or prevent certain actions.
+
+- kubelet の API はログにも残らず、攻撃対象になり得るのか。。。
+- 一応認証機能も使えるみたい。kubelet を呼び出すのは基本的に kube-api-server なのかな？schedule する時とかに使うのかな？
+- etcd は kube-api-server とバックアップソリューション以外は使わないが、乗っ取られるとやばい
+- クライアント証明書認証によって管理されているみたい
+
+> Even without elevating their Kubernetes RBAC privileges, an attacker who can modify etcd can retrieve any API object or create new workloads inside the cluster.
+
+- 恐ろしい。。。
+
+> Typically, etcd client certificates that are only used for health checking can also grant full read and write access.
+
+- これも恐ろしい。health check だけでフルアクセスって。。。
+
+- kubelet がアクセスする unix ソケットに対してアクセス権を持つ攻撃者は新しいコンテナの起動や実行中のコンテナとの通信を行うことができる
+- node で稼働している他のコンポーネントから kubelet を分離することで、kubelet の攻撃を緩和しよう
+
+## Linux kernel security constraints for Pods and containers
+
+- Pod に SecurityContext を設定し、Linux ユーザーとグループを定義すると、root ユーザーとしてコンテナが実行されないし、コンテナの設定よりも優先されるから 3rd パーティのコンテナとかを使う時にも重宝するらしい
+
+- UID とかを設定することで hostPath や Capability を制限できる
+- seccomp はシステムコールを制限することができる
+- AppArmor はプロセスのアクセス権を制限する
+- SELinux は security labels を使ってセキュリティポリシーを適用する?
+- default の seccomp が常に有効になっているらしい
+
+- seccomp をしたら以下のようなリスクはある(確かに)
+
+  > Configurations might break during application updates
+  > Attackers can still use allowed syscalls to exploit vulnerabilities
+  > Profile management for individual applications becomes challenging at scale
+
+- 推奨されるのは、より強力な制限が欲しければ、sandbox 環境で動くコンテナランタイムとかを選定することらしい
+  - ただ、より多くのコンピュートリソースは必要らしい
+- SELinux はファイルへのアクセス範囲を制限する Linux カーネルモジュール
+- SecurityContext でラベルを設定することで SELinux の有効化ができる
+- AppArmor と SELinux はどちらかが OS で有効になっていて、違いがある
+
+  > Configuration: AppArmor uses profiles to define access to resources. SELinux uses policies that apply to specific labels.
+  > Policy application: In AppArmor, you define resources using file paths. SELinux uses the index node (inode) of a resource to identify the resource.
+
+- SELinux はラベルを指定して細かいアクセス制限が可能で、AppArmor はファイルパスで荒いアクセス制限をかける
+- Kubernetes Security Profiles Operator という簡単に設定を管理してくれるものがあるらしい
+
+> Before configuring kernel-level security capabilities, you should consider implementing network-level isolation.
+
+> Unless necessary, run Linux workloads as non-root by setting specific user and group IDs in your Pod manifest and by specifying runAsNonRoot: true.
+
+- user id とか group id は常に設定したほうが良いのかな？
+
+## Security Checklist
+
+- system:masters は誰も使うべきではない
+
+> The kube-controller-manager is running with --use-service-account-credentials enabled.
+
+    - これはなぜだっけ？
+    - マネージドサービス使っているなら常に守られてそうだけど
+
+- system:master は非常手段として使うべき
+- Ingress and egress network policies are applied to all workloads in the cluster.
+  - 厳しい...
+- Default network policies within each namespace, selecting all pods, denying everything, are in place.
+  - ここら辺もミスったら通信できない大事故になる気もする
+- LoadBalancer Type の Service とか CVE があるレベルで危険みたい
+
+- 機密性の高いワークロードには CPU 制限をすることとあったが、これをすることで Dos とかに対応できるとあり、なるほどなという感じ
+- Seccomp とか AppArmor とかは、マネージドサービスのノードだとどうなっているんだろう
+- 監査ログを有効化してとあるから、監査ログを有効化にするオプションでもあるのかな？
+
+  - あるみたい
+
+- Pod の配置を気をつけましょうとのこと
+
+  - これはちゃんとやったほうが良さそう
+  - ノード分離と、やるのであれば sandbox な Container Runtime を使うのが良いとのこと
+
+- Secret は暗号化しましょう
+- サードパーティのストレージに保存されているシークレットを secret として導入しようとのこと
+  - これは k8s 弱気なんか？
+- コンテナイメージは sha256 ダイジェストによって行い、タグはやめようとのこと
+  - タグじゃ悪さされても気づかないってことかな
+  - もしくはアドミッションコントロール経由でデジタル署名の検証をしましょうとのことだけどよくわからんかも
+  - imagepolicywebhook を使うとダイジェストを使うことを強制できるのかな
+- AdmissionControl ってデフォルトで有効になっている多くものがあるみたい
+  - あまりよく分かってないから見るのアリかも
+  - ResourceQuota とかも AdmissionControl の一つみたい
+
+## Application Security Checklist
+
+- CPU,Memory Limit は設定しようとのことだけど、ここら辺自動的にいい感じにできたらな
+- ServiceAccount は default 以外の作成したものを使おうとのこと
+- runAsNonRoot は常に true にしようとのこと
+- image signature がどのようにするのかがよく分かってないかも
+
+  - なんかツールとかあるのかな？
+  - signature ってことは秘密鍵は必要そうだけど、そこら辺の管理はしたくないな
+
+- AdmissionControl とかを組み込めばどれもプラットフォームとして提供できそうな雰囲気
+- 逆にこの CheckList をみてプラットフォームを組み込むのはアリだなという感じ
