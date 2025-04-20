@@ -1286,3 +1286,391 @@ metadata:
 - CPU マネージャーや Memory マネージャー, Device Manager などもあるみたい
 - Fargate 使えばこれらを諦められる...(それが最適かどうかは置いておいて)
 - Linux とか CS の知識をたくさん持っていればここら辺の話もわかるようになるのか？
+
+## Kubernetes のスケジューラー
+
+- kube-scheduler は別のスケジュールコンポーネントを代わりに差し込むこともできるようになっているみたい。。
+- スケジューラーは Pod に対する割り当て可能な Node を見つけ、それらの割り当て可能な Node にスコアをつけて、その中から最も高いスコアの Node を選択して Pod に割り当てるみたい
+- binding っていう処理の中で API サーバーに割り当てリクエストを送るとのこと
+- フィルタリングでスケジュール可能な Node を探し、スコアリングで最適な Node を選ぶとのこと
+
+## ノード上への Pod のスケジューリング
+
+- ラベルセレクターを使用してノードの制約をかけるのが推奨
+- ノードのラベルを利用する場合は、kubelet が修正できないラベルを選択することで、ノードが侵害されてもそのノードへのスケジュールを防ぐことができる
+- nodeSelector は単純にノードをラベルで指定するもので、それより柔軟なのが nodeAffinity というもの
+- Pod 間のアフィニティやアンチアフィニティも設定できる
+- requiredDuringSchedulingIgnoredDuringExecution は Pod がスケジュールされる前にノードが条件を満たしているかどうかを確認するもの
+  - preferredDuringSchedulingIgnoredDuringExecution は条件を満たすノードがない場合に Pod をスケジュールするもの
+- IgnoredDuringExecution は Pod がスケジュールされた後に条件が変わっても Pod が削除されないもの
+- ここら辺は要件だけ考えて AI が正確にやってくれたら嬉しいな
+- preferredDuringSchedulingIgnoredDuringExecution は weight を指定できるっぽい
+- addedAffinity を設定すると、Pod に適用させたいデフォルトのスケジューラーを作成できるみたい
+  - いちいち pod で preferredDuringSchedulingIgnoredDuringExecution とかを設定せずとも使いまわせるってことかな？
+
+> Pod 間アフィニティとアンチアフィニティはかなりの処理量を必要とするため、大規模クラスターでのスケジューリングが大幅に遅くなる可能性があります そのため、数百台以上のノードから成るクラスターでの使用は推奨されません。
+
+- これは気をつけねば。。。
+- Pod 間アフィニティは deployment のセットとかに対して実行するといいケースがあるみたい
+
+## Pod のオーバーヘッド
+
+- Pod のオーバーヘッドはコンテナの要求と制限に加えて Pod のインフラで消費されるリソースを計算するための機能
+  - limit,requests ってコンテナにだけ適用されるものだったんだと、ここで知った
+- この機能を使うには RuntimeClass が必要見たい
+- kube-scheduler は Pod のオーバーヘッドとコンテナ要求の合計を見るとあるので、Pod 全体の消費量ではなく、コンテナの消費量を差し引いたオーバーヘッドのみを設定するって感じか
+
+  - これってどんぐらいあるんだろ？コンテナの消費量に比べて少ないと思っているけど。。
+  - あとはコンテナの数とかでどのくらい変わってくるのか？
+
+> Pod のオーバヘッドが利用されているタイミングを特定し、定義されたオーバーヘッドで実行されているワークロードの安定性を観察するため、kube-state-metrics には kube_pod_overhead というメトリクスが用意されています。
+
+- どのようなデータがどのように取得できるのか？そしてそれを観察し続けるのは大事だな〜
+
+## Pod トポロジー分散制約
+
+- Pod が増減する時に、障害性やレイテンシーのことを考えると、node やゾーンに対してうまいこと分散させる必要があるよねという話
+
+```
+apiVersion: v1
+kind: Pod
+metadata:
+  name: example-pod
+spec:
+  # トポロジー分散制約を設定
+  topologySpreadConstraints:
+    - maxSkew: <integer>
+      minDomains: <integer> # オプション
+      topologyKey: <string>
+      whenUnsatisfiable: <string>
+      labelSelector: <object>
+      matchLabelKeys: <list> # オプション; v1.27以降ベータ
+      nodeAffinityPolicy: [Honor|Ignore] # オプション; v1.26以降ベータ
+      nodeTaintsPolicy: [Honor|Ignore] # オプション; v1.26以降ベータ
+  ### 他のPodのフィールドはここにあります
+```
+
+- maxSkew は Pod が不均等に分散される程度
+
+> topologyKey はノードラベルのキーです。 このキーと同じ値を持つノードは、同じトポロジー内にあると見なされます。 トポロジー内の各インスタンス(つまり、<key, value>ペア)をドメインと呼びます。 スケジューラーは、各ドメインに均等な数の Pod を配置しようとします。 また、適格ドメインは nodeAffinityPolicy と nodeTaintsPolicy の要件を満たすノードのドメインとして定義します。
+
+- az とかで topologyKey を設定すると、az ごとに Pod を分散させることができるってことかな?
+- nodeAffinity とか nodeTaints とかをトポロジーを考慮する際に、考慮するか、無視するかの設定ができるみたい
+
+- 複数制約を適用すると、どちらも満たされない時に pending 状態で止まることもあるみたい
+
+  - whenUnsatisfiable: ScheduleAnyway とかを設定することで、無視してスケジュールすることもできるが、そうなると、設定ミスに気づかないこともありそう(監視して、warn が出てないかなどを見れば良いのか？)
+
+- 暗黙的な落とし穴もあるみたいで、よくわからなかったが、注意必要
+
+  - マネージドなサービスであれば問題なさそうだが、node へのラベルつけ忘れやタイポをすると意図しないことになるとのこと
+  - あとは新しい Pod と同じ Ns を持つ Pod のみが一致する候補になるみたい
+
+- クラスターにデフォルトのトポロジー分散制約を設定することができるみたい
+
+  - topologySpreadConstraints に 制約が定義されておらず、Pod が Service や ReplicaSet などに属しているときに適用されるみたい
+
+- クラスターレベルのデフォルト制約を構成しない場合は以下のトポロジー制約を指定したかのように動作するみたい
+
+```
+defaultConstraints:
+  - maxSkew: 3
+    topologyKey: "kubernetes.io/hostname"
+    whenUnsatisfiable: ScheduleAnyway
+  - maxSkew: 5
+    topologyKey: "topology.kubernetes.io/zone"
+    whenUnsatisfiable: ScheduleAnyway
+```
+
+- デフォルトの Pod 分散制約は無効化することもできる見たい
+
+```
+apiVersion: kubescheduler.config.k8s.io/v1beta3
+kind: KubeSchedulerConfiguration
+
+profiles:
+  - schedulerName: default-scheduler
+    pluginConfig:
+      - name: PodTopologySpread
+        args:
+          defaultConstraints: []
+          defaultingType: List
+```
+
+- 既知の制限もあるみたい
+
+## Pod のスケジューリング準備
+
+- 絶対スケジュールできない Pod がいつづけるのがよく無さそうなので schedulingGates を指定したり削除したりすることで、スケジューリングを保留にすることができる？
+- ただ、新しい schedulingGate を追加できず、人間が schedulegate を設定、削除するのはよくわからん
+- Pod をデプロイしたけど、リソース不足でスケジュールできませんでした、だからスケジュール対象から外したいです、ということならわかるけど、作成時にしか指定できないのならこれ使うことあるか？
+- pod スケジューリング命令は変更できるものとそうでないものがあるみたいだから注意
+
+## Taint と Toleration
+
+- Taint は Node から Pod を排除するために使用される
+- Toleration は Taint に対して Pod が許容できることを指定するが必ずしもその node にスケジュールされるわけではない
+
+> toleration が taint と合致するのは、key と effect が同一であり、さらに下記の条件のいずれかを満たす場合です。
+
+- Pod に指定するとき effect も一致している必要があるのは微妙に違和感
+
+- NoExecute の効果は以下で、Pod がスケジュールされている node に taint が追加された場合、Pod は削除される
+
+> 対応する toleration のない Pod は即座に除外される
+> 対応する toleration があり、それに tolerationSeconds が指定されていない Pod は残り続ける
+> 対応する toleration があり、それに tolerationSeconds が指定されている Pod は指定された間、残される
+
+## スケジューリングフレームワーク
+
+- スケジューリングフレームワークは Kubernetes のスケジューラーに対してプラグイン可能なアーキテクチャ
+- 1 つの Pod をスケジュールしようとする各動作は Scheduling Cycle と Binding Cycle の 2 つのフェーズ
+- scheduling framework extension points は、自分たちがフレームワークとか作る上でも参考にできそう
+  - ここまでプラグインできる場所があるんか
+
+## 動的リソース割り当て
+
+- 新目の機能
+- Pod と Pod 内のコンテナ間でリソースを要求および共有するための API
+- GPU 用の機能？
+- kubelet が動的リソースの検出を可能にする gPRC サービスを提供しているっぽい
+
+## スケジューラーのパフォーマンスチューニング
+
+- スケジューラーは Binding と呼ばれる処理で API サーバーに対して割り当てが決まったノードの情報を通知する
+
+> スケジューリング性能を改善するため、kube-scheduler は割り当て可能なノードが十分に見つかるとノードの検索を停止できます。大規模クラスターでは、すべてのノードを考慮する単純なアプローチと比較して時間を節約できます。
+
+- こんなことができたのか。。これ EKS とかでもできるのかな？
+- ここまで考えるべき大規模の規模感ってどんぐらいだろ
+
+> 閾値を指定しない場合、Kubernetes は 100 ノードのクラスターでは 50%、5000 ノードのクラスターでは 10%になる線形方程式を使用して数値を計算します。自動計算の下限は 5%です。
+
+- 結構これでもいい感じな気もする
+- デフォルトでは最低でも 5％のノードに対して評価してくれる
+- これって、大規模クラスターでパフォーマンスを上げられる余地って 0〜4%ってことか
+
+> 割り当て可能なノードが 100 以下のクラスターでは、スケジューラの検索を早期に停止するのに十分な割り当て可能なノードがないため、スケジューラはすべてのノードをチェックします。
+
+> 小規模クラスターでは、percentageOfNodesToScore に低い値を設定したとしても、同様の理由で変更による影響は全くないか、ほとんどありません。
+
+> クラスターのノード数が数百以下の場合は、この設定オプションをデフォルト値のままにします。変更してもスケジューラの性能を大幅に改善する可能性はほとんどありません。
+
+- この説明良いな
+- 100 ノードってどのくらいなんだろ？あとノードのスペックにもよるしな
+- eks だと 1 ノード 110pod が制限らしいから、100 ノードだと 1 万 1 千 pod ぐらいか
+- モノリスなシステムだったら余裕で 100 ノードぐらいでいけそうな気もする
+- 基本的には 10％未満にしないでくださいとのこと
+
+  - うまく配置されなくなるので
+
+- スケジューラーはラウンドロビン方式でノードを探索しているらしい
+  - 案外普通だった
+
+## 拡張リソースのリソースピンバッキング
+
+> 「Bin Packing（ビンパッキング）」とは、たとえば「限られた大きさの箱（bin）に物を効率よく詰める」という問題のことです。by ChatGPT
+
+- pod をできるだけ node に効率よく詰めること？
+- weight を設定することで、配置に優先順位をつけることができる?
+- shape.utilization で詰め込んでいる node に対してスコアリングできる
+- スケジューリングの計算の例もあるのでなんとなくわかる
+
+## Pod の優先度とプリエンプション
+
+- 優先度を設定すると、優先度の高い pod のために優先度の低い pod を追い出すことができる機能っぽい
+
+  > クラスターの全てのユーザーが信用されていない場合、悪意のあるユーザーが可能な範囲で最も高い優先度の Pod を作成することが可能です。これは他の Pod が追い出されたりスケジューリングできない状態を招きます。 管理者は ResourceQuota を使用して、ユーザーが Pod を高い優先度で作成することを防ぐことができます。
+
+- 怖いね〜。パブクラとかを k8s で作るときはこんな感じになるかもって感じなのかな
+- priorityClass を作成して、pod で指定するみたい
+
+> PriorityClass オブジェクトは 10 億以下の任意の 32 ビットの整数値を持つことができます。これは、PriorityClass オブジェクトの値の範囲が-2147483648 から 1000000000 までであることを意味します。 それよりも大きな値は通常はプリエンプトや追い出すべきではない重要なシステム用の Pod のために予約されています。
+
+- 予約の仕方賢い気がする。こういう感じで予約とかしていけば良いのかな？
+
+- 以下のようなシンプルな感じみたい
+
+```
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: high-priority
+value: 1000000
+globalDefault: false
+description: "この優先度クラスはXYZサービスのPodに対してのみ使用すべきです。"
+```
+
+> preemptionPolicy: Never と設定された Pod は、スケジューリングのキューにおいて他の優先度の低い Pod よりも優先されますが、他の Pod をプリエンプトすることはありません。 スケジューリングされるのを待つ非プリエンプトの Pod は、リソースが十分に利用可能になるまでスケジューリングキューに残ります。
+
+- 優先度高くしたいが、リソースを追い出すまでもない場合は preemptionPolicy: Never とすると良いみたい
+- プリエンプとされても pod には終了までの猶予期間があるため、プリエンプとした時刻と待機状態の Pod がノードにスケジュール可能になるまでの時刻の間に間が開くみたい
+- pod の猶予期間を 0 などの小さい値にすると、間が空きにくくなる
+
+> Kubernetes は Pod をプリエンプトする際に PDB に対応しますが、PDB はベストエフォートで考慮します。スケジューラーはプリエンプトさせたとしても PDB に違反しない Pod を探します。そのような Pod が見つからない場合でもプリエンプションは実行され、PDB に反しますが優先度の低い Pod が追い出されます。
+
+- これ結構罠なのでは？ただ、優先度低いのに PDB で最小数を決めておくってのは少しオペレーション的に違和感はある
+- 待機状態の Pod よりも優先度の低い Pod をノードから全て追い出したら、待機状態の Pod をノードへスケジュールできるかの条件が真の時のみプリエンプションの対象になる
+- なので、Pod 間のアフィニティを持つ場合は Pod 間のアフィニティはそれらの優先度の低い pod がなければ満たされない
+- なので、優先度が同一か高い pod に対してのみ Pod 間のアフィニティを設定することが重要
+
+## ノードの圧迫による退避
+
+- kubelet はリソース監視をしており、リソースの 1 つ以上が特定の消費レベルに達すると kubelet はリソースの枯渇を防ぐためにノード上の 1 つ以上の pod を事前に停止してリソースを回収する
+- kubelet はノードのリソース枯渇による退避中に kubelet は選択された Pod のフェーズを Failed に設定し、Pod を終了する
+
+  - 最近 CPU が爆発することがあったけど Failed にはならなかったような
+  - CPU は見てない？(そんなことはないと思うけど)
+
+- PDB や terminationGracePeriodSeconds などを気にせずに削除するみたい
+- static Pod に対しても退避させることがあるみたい
+
+> kubelet は、エンドユーザーの Pod を終了する前にノードレベルのリソースを回収しようとします。 例えば、ディスクリソースが枯渇している場合は未使用のコンテナイメージを削除します。
+
+- Pod が退避されるとそれを管理している Deployment などは新しい Pod を作成するみたい
+  - 使い回しではないということ
+- kubelet は退避を決定するために退避シグナルや退避閾値、監視感覚などのパラメータを使用する
+- 退避シグナルはある時点での特定リソースの状態を表すもので、シグナルと退避閾値を比較して退避を決定するみたい
+  - 退避シグナルには memory は nodefs,imagefs,containerfs,pid などが
+
+## API を起点とした退避
+
+- Eviction API を使用して退避オブジェクトを作成し、Pod の正常終了を起動させるプロセス
+- kubectl drain にっても可能
+- PDB と terminationGracePeriodSeconds を考慮して、Pod を削除するみたい
+- うまくいけば 200 OK だが、PDB の設定によって退去が許可されていないことがわかると 429 を返すらしい
+  - 若干 429 ではない気がするけど、PDB の調整が時間経過で良くなる可能性があるからみたい
+- 500 も返すらしく、複数の PDB が同じ Pod を参照しているなどの、設定に誤りがあり、退去が許可されないことを示すらしい
+
+  - これも 500？
+  - invalid parameter とか 400 番台であったような
+
+- 200 を返したら、以下の流れで Pod が削除される
+
+  1. 削除タイムスタンプをそ更新して、Pod が終了したとみなす
+
+  - このとき Pod は設定された猶予期間が儲けられる
+
+  2. kubelet が Pod のシャットダウンを開始する
+  3. 2 の間にコントロールプレーンは Endpoint オブジェクトから Pod を削除する
+  4. Pod の猶予期間が終了すると kubelet はローカル Pod を強制的に終了する
+  5. kubelet は API サーバーに Pod リソースを削除するように支持する
+  6. API サーバーは Pod リソースを削除 5. kubelet は API サーバーに Pod リソースを削除するように支持する
+
+- アプリケーションが壊れた状態になると Eviction API が聞かなくなることもあるらしい
+- アプリケーションの調査や Eviction API の代わりにコントロールプレーンから直接 Pod を削除する必要がある
+  - こういうよくわからん状態に陥ることがあるのが怖い
+
+## NodeShutdowns
+
+- kubelet が os のシャットダウン通知を受け取り、Pod を段階的に終了させる機能
+  - 電源供給がなくなっても稼働するっていうのは電源がなくても稼働するってこと？そんなことある？
+- systemd が SIGTERM を kubelet に送ることで動作開始
+- kubelet は非クリティカル Pod,クリティカル Pod の順で Pod を終了させる
+
+- クリティカル Pod は、以下の条件をすべて満たすもの：
+  - Static Pod かつ kube-system namespace
+  - priorityClassName が以下のいずれか：
+  - system-node-critical
+  - system-cluster-critical
+
+## Node AutoScaling
+
+- Node Provisioning: スケジュールできない Pod が存在する場合、新しいノードを自動的に追加
+- Node Consolidation: リソースの利用率が低いノードを削除し、クラスターの効率を向上させる
+- Cluster Autoscaler とか Karpenter などがある
+
+## Cluster Networking
+
+- k8s のネットワーク周りの基本の話
+
+## Admission Webhook Good Practices
+
+- Webhook のベスプラみたいなものが多く描かれている
+- もし自分で作成する必要が出てきたら見直しても良いかも
+
+## Logging Architecture
+
+- Kubernetes v1.32 では、アルファ機能として PodLogsQuerySplitStreams フィーチャーゲートが導入され、コンテナの標準出力と標準エラー出力を個別に取得できるようになった
+
+- Kubernetes は、コンテナランタイムを通じて、各コンテナの stdout および stderr をログファイルとして保存
+- これらのログは、CRI（Container Runtime Interface）ログ形式で /var/log/pods ディレクトリ内に保存される
+- log rotation の設定も可能
+
+## Compatibility Version For Kubernetes Control Plane Components
+
+- --emulated-version フラグを使用すると、コントロールプレーンコンポーネントが指定した過去の Kubernetes バージョンの動作をエミュレート（模倣）することができる
+
+- 利用シナリオとしては
+  - 段階的なアップグレード
+  - 後方互換性の維持
+  - テストと検証
+- コンポーネント単位でできそうなので、あるリソースだけバージョンアップせずに調整できる感じ
+
+## Metrics for Kubernetes System Components
+
+- Kubernetes の各システムコンポーネント（例：kube-apiserver、kube-scheduler、kube-controller-manager、kubelet、kube-proxy）は、内部状態やパフォーマンスを示すメトリクスを Prometheus 形式で /metrics エンドポイントから公開している
+
+- メトリクスの公開を k8s レベルでやっているとは思っていなかった
+
+## Metrics for Kubernetes Object States
+
+- kube-state-metrics は、Kubernetes クラスター内のオブジェクトの状態に関するメトリクスを生成し、HTTP エンドポイントを通じて公開するアドオンエージェント
+
+- このコンポーネントは、Kubernetes API サーバーと接続し、各オブジェクトの状態（例：ラベル、アノテーション、起動・終了時刻、ステータス、フェーズなど）に基づいたメトリクスを生成する
+
+- このコンポーネントを使用するには、Prometheus などのメトリクス収集ツールと連携する必要がある
+
+## System Logs
+
+- klog は kubernets のロギングライブラリ
+  - 標準エラーに出力されるみたい
+- ContextualLogger を使用して、ログのコンテキストを追加することができる
+
+- コンテナ内で実行されるコンポーネント（例：kube-scheduler、kube-proxy）：​/var/log ディレクトリ内の .log ファイルにログを出力
+
+- コンテナ外で実行されるコンポーネント（例：kubelet、コンテナランタイム）：
+
+  - systemd 使用時：journald にログを出力します。
+  - 非 systemd 環境：/var/log ディレクトリ内の .log ファイルにログを出力します。
+
+- Kubernetes v1.30 でベータ版として導入されたログクエリ機能を使用すると、ノード上のサービスのログを取得可能
+
+## Traces For Kubernetes System Components
+
+> Kubernetes components have built-in gRPC exporters for OTLP to export traces, either with an OpenTelemetry Collector, or without an OpenTelemetry Collector.
+
+- 全然知らなかった。。
+
+- TracingConfiguration を config として設定することでトレースを収集できるっぽい？
+  - これは kube-apiserver の話
+- KubeletConfiguration をやると kubelet の設定ができるっぽい
+- これって任意のバックエンドに送信できるってことだよな？
+
+## Proxies in Kubernetes
+
+- kubectl proxy とか kube proxy とか
+- 性質の違う proxy の紹介
+
+## API Priority and Fairness
+
+- APF って略すっぽい
+- API サーバーへの負荷上限を設定する最近の設定
+- きめ細かい方法でリクエストを分類し、分離する
+- バーストの場合にリクエストが拒否されないように、キューを導入して、あるリソースのリクエストが他のリソースの邪魔にならないようにする
+- コマンドで設定できるらしいけど、デフォルトで使えるっぽい
+- 優先度とか公平性を考慮したものらしい
+- PriorityLevelConfiguration で、リクエストの優先度を定義できるみたい
+- FlowSchema で、どのリクエストをどの PriorityLevelConfiguration にマッピングするかを定義できるみたい
+- Seats によってリクエストの重みづけも設定できるみたい
+- Exempt(免除)されるリクエストもある
+
+## Installing Addons
+
+- たくさんのプロダクトが載っている感じ
+
+## Coordinated Leader Election
+
+- めちゃ新しい機能でまだ alpha
+- 結局何が嬉しいのか、何ができるのかがよくわからなかった
+- 新しいリーダ選出のアルゴリズムって感じ？
