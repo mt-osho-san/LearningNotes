@@ -498,3 +498,336 @@ export {beginWork};
 ```
 
 次はこの呼び出し元を見つける
+
+---
+
+- beginWorkはFiber型を返す
+
+```
+// by CloudCode
+  一般的に、Fiberは以下のことをしています：
+
+  1. 仮想DOM要素の表現 - 各React要素（コンポーネント、DOM要素）をFiberオブジェクトとして表現
+  2. 作業単位 - Reactが処理する最小単位として機能
+  3. 状態管理 - コンポーネントの状態、props、副作用などを追跡
+  4. 優先度制御 - どの更新を先に処理するかを決定
+
+  どの具体的な部分について知りたいですか？例えば：
+  - Fiberノードの構造
+  - beginWork/completeWorkの処理
+  - reconciliation（差分検出）の仕組み
+  - 優先度とレーンの概念
+
+  簡単に言うと
+
+  Fiberは「作業単位」で、Reactが各コンポーネントに対して何をすべきかを追跡する仕組みです。double
+  buffering（alternateフィールド）で効率的な更新を実現し、親子関係（return/child/sibling）でツリー構造を表現しています。
+
+```
+
+```js
+// A Fiber is work on a Component that needs to be done or was done. There can
+// be more than one per component.
+export type Fiber = {
+  // These first fields are conceptually members of an Instance. This used to
+  // be split into a separate type and intersected with the other Fiber fields,
+  // but until Flow fixes its intersection bugs, we've merged them into a
+  // single type.
+
+  // An Instance is shared between all versions of a component. We can easily
+  // break this out into a separate object to avoid copying so much to the
+  // alternate versions of the tree. We put this on a single object for now to
+  // minimize the number of objects created during the initial render.
+
+  // Tag identifying the type of fiber.
+  tag: WorkTag,
+
+  // Unique identifier of this child.
+  key: null | string,
+
+  // The value of element.type which is used to preserve the identity during
+  // reconciliation of this child.
+  elementType: any,
+
+  // The resolved function/class/ associated with this fiber.
+  type: any,
+
+  // The local state associated with this fiber.
+  stateNode: any,
+
+  // Conceptual aliases
+  // parent : Instance -> return The parent happens to be the same as the
+  // return fiber since we've merged the fiber and instance.
+
+  // Remaining fields belong to Fiber
+
+  // The Fiber to return to after finishing processing this one.
+  // This is effectively the parent, but there can be multiple parents (two)
+  // so this is only the parent of the thing we're currently processing.
+  // It is conceptually the same as the return address of a stack frame.
+  return: Fiber | null,
+
+  // Singly Linked List Tree Structure.
+  child: Fiber | null,
+  sibling: Fiber | null,
+  index: number,
+
+  // The ref last used to attach this node.
+  // I'll avoid adding an owner field for prod and model that as functions.
+  ref:
+    | null
+    | (((handle: mixed) => void) & {_stringRef: ?string, ...})
+    | RefObject,
+
+  refCleanup: null | (() => void),
+
+  // Input is the data coming into process this fiber. Arguments. Props.
+  pendingProps: any, // This type will be more specific once we overload the tag.
+  memoizedProps: any, // The props used to create the output.
+
+  // A queue of state updates and callbacks.
+  updateQueue: mixed,
+
+  // The state used to create the output
+  memoizedState: any,
+
+  // Dependencies (contexts, events) for this fiber, if it has any
+  dependencies: Dependencies | null,
+
+  // Bitfield that describes properties about the fiber and its subtree. E.g.
+  // the ConcurrentMode flag indicates whether the subtree should be async-by-
+  // default. When a fiber is created, it inherits the mode of its
+  // parent. Additional flags can be set at creation time, but after that the
+  // value should remain unchanged throughout the fiber's lifetime, particularly
+  // before its child fibers are created.
+  mode: TypeOfMode,
+
+  // Effect
+  flags: Flags,
+  subtreeFlags: Flags,
+  deletions: Array<Fiber> | null,
+
+  lanes: Lanes,
+  childLanes: Lanes,
+
+  // This is a pooled version of a Fiber. Every fiber that gets updated will
+  // eventually have a pair. There are cases when we can clean up pairs to save
+  // memory if we need to.
+  alternate: Fiber | null,
+
+  // Time spent rendering this Fiber and its descendants for the current update.
+  // This tells us how well the tree makes use of sCU for memoization.
+  // It is reset to 0 each time we render and only updated when we don't bailout.
+  // This field is only set when the enableProfilerTimer flag is enabled.
+  actualDuration?: number,
+
+  // If the Fiber is currently active in the "render" phase,
+  // This marks the time at which the work began.
+  // This field is only set when the enableProfilerTimer flag is enabled.
+  actualStartTime?: number,
+
+  // Duration of the most recent render time for this Fiber.
+  // This value is not updated when we bailout for memoization purposes.
+  // This field is only set when the enableProfilerTimer flag is enabled.
+  selfBaseDuration?: number,
+
+  // Sum of base times for all descendants of this Fiber.
+  // This value bubbles up during the "complete" phase.
+  // This field is only set when the enableProfilerTimer flag is enabled.
+  treeBaseDuration?: number,
+
+  // Conceptual aliases
+  // workInProgress : Fiber ->  alternate The alternate used for reuse happens
+  // to be the same as work in progress.
+  // __DEV__ only
+
+  _debugInfo?: ReactDebugInfo | null,
+  _debugOwner?: ReactComponentInfo | Fiber | null,
+  _debugStack?: Error | null,
+  _debugTask?: ConsoleTask | null,
+  _debugNeedsRemount?: boolean,
+
+  // Used to verify that the order of hooks does not change between renders.
+  _debugHookTypes?: Array<HookType> | null,
+}
+```
+
+- ReactFiberWorkLoop.jsが呼び出している
+
+```js
+// Cloud Code曰く、最初の子供をnextとして返すらしい
+function performUnitOfWork(unitOfWork: Fiber): void {
+  // The current, flushed, state of this fiber is the alternate. Ideally
+  // nothing should rely on this, but relying on it here means that we don't
+  // need an additional field on the work in progress.
+  const current = unitOfWork.alternate;
+
+  let next;
+  if (enableProfilerTimer && (unitOfWork.mode & ProfileMode) !== NoMode) {
+    startProfilerTimer(unitOfWork);
+    next = beginWork(current, unitOfWork, entangledRenderLanes);
+    stopProfilerTimerIfRunningAndRecordDuration(unitOfWork);
+  } else {
+    next = beginWork(current, unitOfWork, entangledRenderLanes);
+  }
+
+  unitOfWork.memoizedProps = unitOfWork.pendingProps;
+  if (next === null) {
+    // If this doesn't spawn new work, complete the current work.
+    completeUnitOfWork(unitOfWork);
+  } else {
+    workInProgress = next;
+  }
+}
+```
+
+```js
+function completeUnitOfWork(unitOfWork: Fiber): void {
+  // Attempt to complete the current unit of work, then move to the next
+  // sibling. If there are no more siblings, return to the parent fiber.
+  let completedWork: Fiber = unitOfWork;
+  do {
+    // export const Incomplete = /*                   */ 0b0000000000000001000000000000000;
+    // suspend機能かも。非同期処理に関係しているかも。
+    if ((completedWork.flags & Incomplete) !== NoFlags) {
+      // This fiber did not complete, because one of its children did not
+      // complete. Switch to unwinding the stack instead of completing it.
+      //
+      // The reason "unwind" and "complete" is interleaved is because when
+      // something suspends, we continue rendering the siblings even though
+      // they will be replaced by a fallback.
+      const skipSiblings = workInProgressRootDidSkipSuspendedSiblings;
+      unwindUnitOfWork(completedWork, skipSiblings);
+      return;
+    }
+
+    // The current, flushed, state of this fiber is the alternate. Ideally
+    // nothing should rely on this, but relying on it here means that we don't
+    // need an additional field on the work in progress.
+    const current = completedWork.alternate;
+    const returnFiber = completedWork.return;
+
+    let next;
+    startProfilerTimer(completedWork);
+    next = completeWork(current, completedWork, entangledRenderLanes);
+    if (enableProfilerTimer && (completedWork.mode & ProfileMode) !== NoMode) {
+      // Update render duration assuming we didn't error.
+      stopProfilerTimerIfRunningAndRecordIncompleteDuration(completedWork);
+    }
+    if (next !== null) {
+      // Completing this fiber spawned new work. Work on that next.
+      workInProgress = next;
+      return;
+    }
+
+    const siblingFiber = completedWork.sibling;
+    if (siblingFiber !== null) {
+      // If there is more work to do in this returnFiber, do that next.
+      workInProgress = siblingFiber;
+      return;
+    }
+    // Otherwise, return to the parent
+    // $FlowFixMe[incompatible-type] we bail out when we get a null
+    completedWork = returnFiber;
+    // Update the next thing we're working on in case something throws.
+    workInProgress = completedWork;
+  } while (completedWork !== null);
+
+  // We've reached the root.
+  if (workInProgressRootExitStatus === RootInProgress) {
+    workInProgressRootExitStatus = RootCompleted;
+  }
+}
+```
+
+```
+⏺ 正解です！beginWork は 最初の子供（first child）だけ を返します。配列ではありません。
+
+  兄弟ノードの仕組み
+
+  Fiberの構造:
+  type Fiber = {
+    child: Fiber | null,    // 最初の子供
+    sibling: Fiber | null,  // 次の兄弟
+    return: Fiber | null,   // 親
+  }
+
+  具体例
+
+  <div>
+    <span>A</span>
+    <span>B</span>
+    <span>C</span>
+  </div>
+
+  Fiberツリーの構造:
+  div Fiber
+     ↓ child
+  span(A) → span(B) → span(C) → null
+     ↑        ↑        ↑
+   return   return   return
+
+  beginWorkの動作
+
+  1. div の beginWork → span(A) のFiberを返す（最初の子のみ）
+  2. span(A) 処理完了後、work loopが span(A).sibling で span(B) に移動
+  3. span(B) 処理完了後、work loopが span(B).sibling で span(C) に移動
+
+  兄弟の作成タイミング
+
+  reconcileChildren() 内で全ての兄弟が一度に作成され、sibling ポインタでリンクされます：
+
+  // reconcileChildren内でこんな感じで兄弟を作成
+  child1.sibling = child2;
+  child2.sibling = child3;
+  child3.sibling = null;
+
+  要するに：beginWork は最初の子だけ返し、兄弟はlinked listで管理され、work loopが順番に処理していきます。
+```
+
+- performUnitOfWorkがbeginWorkを呼び出しており、performUnittOfWorkは以下から呼び出されている
+
+```js
+// これ見れば大体掴めそう
+function workLoopSync() {
+  // Perform work without checking if we need to yield between fiber.
+  while (workInProgress !== null) {
+    performUnitOfWork(workInProgress);
+  }
+}
+---
+function workLoopConcurrent(nonIdle: boolean) {
+  // We yield every other "frame" when rendering Transition or Retries. Those are blocking
+  // revealing new content. The purpose of this yield is not to avoid the overhead of yielding,
+  // which is very low, but rather to intentionally block any frequently occuring other main
+  // thread work like animations from starving our work. In other words, the purpose of this
+  // is to reduce the framerate of animations to 30 frames per second.
+  // For Idle work we yield every 5ms to keep animations going smooth.
+  if (workInProgress !== null) {
+    const yieldAfter = now() + (nonIdle ? 25 : 5);
+    do {
+      // $FlowFixMe[incompatible-call] flow doesn't know that now() is side-effect free
+      performUnitOfWork(workInProgress);
+    } while (workInProgress !== null && now() < yieldAfter);
+  }
+}
+---
+/** @noinline */
+function workLoopConcurrentByScheduler() {
+  // Perform work until Scheduler asks us to yield
+  while (workInProgress !== null && !shouldYield()) {
+    // $FlowFixMe[incompatible-call] flow doesn't know that shouldYield() is side-effect free
+    performUnitOfWork(workInProgress);
+  }
+}
+```
+
+- workLoopSyncを呼び出しているのがrenderRootSync
+- renderRootSyncを呼び出しているのがperformSyncWorkOnRoot
+- performSyncWorkOnRootを呼び出しているのがflushSyncWorkAcrossRoots_impl
+- flushSyncWorkAcrossRoots_implを呼び出しているのがflushSyncWorkOnAllRoots
+- flushSyncWorkOnAllRootsを呼び出しているのがflushRoot
+- flushRootを呼び出しているのがattemptSynchronousHydration
+- attemptSynchronousHydrationを呼び出しているのがdispatchEvent
+
+- 次何しよう？？
