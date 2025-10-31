@@ -501,7 +501,7 @@ export {beginWork};
 
 ---
 
-- beginWorkはFiber型を返す
+- beginWork は Fiber 型を返す
 
 ```
 // by CloudCode
@@ -576,7 +576,7 @@ export type Fiber = {
   // I'll avoid adding an owner field for prod and model that as functions.
   ref:
     | null
-    | (((handle: mixed) => void) & {_stringRef: ?string, ...})
+    | (((handle: mixed) => void) & { _stringRef: ?string, ... })
     | RefObject,
 
   refCleanup: null | (() => void),
@@ -649,10 +649,10 @@ export type Fiber = {
 
   // Used to verify that the order of hooks does not change between renders.
   _debugHookTypes?: Array<HookType> | null,
-}
+};
 ```
 
-- ReactFiberWorkLoop.jsが呼び出している
+- ReactFiberWorkLoop.js が呼び出している
 
 ```js
 // Cloud Code曰く、最初の子供をnextとして返すらしい
@@ -785,7 +785,7 @@ function completeUnitOfWork(unitOfWork: Fiber): void {
   要するに：beginWork は最初の子だけ返し、兄弟はlinked listで管理され、work loopが順番に処理していきます。
 ```
 
-- performUnitOfWorkがbeginWorkを呼び出しており、performUnittOfWorkは以下から呼び出されている
+- performUnitOfWork が beginWork を呼び出しており、performUnittOfWork は以下から呼び出されている
 
 ```js
 // これ見れば大体掴めそう
@@ -822,12 +822,164 @@ function workLoopConcurrentByScheduler() {
 }
 ```
 
-- workLoopSyncを呼び出しているのがrenderRootSync
-- renderRootSyncを呼び出しているのがperformSyncWorkOnRoot
-- performSyncWorkOnRootを呼び出しているのがflushSyncWorkAcrossRoots_impl
-- flushSyncWorkAcrossRoots_implを呼び出しているのがflushSyncWorkOnAllRoots
-- flushSyncWorkOnAllRootsを呼び出しているのがflushRoot
-- flushRootを呼び出しているのがattemptSynchronousHydration
-- attemptSynchronousHydrationを呼び出しているのがdispatchEvent
+- workLoopSync を呼び出しているのが renderRootSync
+- renderRootSync を呼び出しているのが performSyncWorkOnRoot
+- performSyncWorkOnRoot を呼び出しているのが flushSyncWorkAcrossRoots_impl
+- flushSyncWorkAcrossRoots_impl を呼び出しているのが flushSyncWorkOnAllRoots
+- flushSyncWorkOnAllRoots を呼び出しているのが flushRoot
+- flushRoot を呼び出しているのが attemptSynchronousHydration
+- attemptSynchronousHydration を呼び出しているのが dispatchEvent
+  - ReactDomeEventListener.js に DispatchEvent が存在する
+- dispatchEvent を呼び出しているのが createEventListenerWrapper
 
 - 次何しよう？？
+
+- createRoot から見ていく
+
+ReactDOMRoot.js
+
+```js
+export function createRoot(
+  container: Element | Document | DocumentFragment,
+  options?: CreateRootOptions
+): RootType {
+  if (!isValidContainer(container)) {
+    throw new Error("Target container is not a DOM element.");
+  }
+
+  warnIfReactDOMContainerInDEV(container);
+
+  const concurrentUpdatesByDefaultOverride = false;
+  let isStrictMode = false;
+  let identifierPrefix = "";
+  let onUncaughtError = defaultOnUncaughtError;
+  let onCaughtError = defaultOnCaughtError;
+  let onRecoverableError = defaultOnRecoverableError;
+  let onDefaultTransitionIndicator = defaultOnDefaultTransitionIndicator;
+  let transitionCallbacks = null;
+
+  if (options !== null && options !== undefined) {
+    if (__DEV__) {
+      if ((options: any).hydrate) {
+        console.warn(
+          "hydrate through createRoot is deprecated. Use ReactDOMClient.hydrateRoot(container, <App />) instead."
+        );
+      } else {
+        if (
+          typeof options === "object" &&
+          options !== null &&
+          (options: any).$$typeof === REACT_ELEMENT_TYPE
+        ) {
+          console.error(
+            "You passed a JSX element to createRoot. You probably meant to " +
+              "call root.render instead. " +
+              "Example usage:\n\n" +
+              "  let root = createRoot(domContainer);\n" +
+              "  root.render(<App />);"
+          );
+        }
+      }
+    }
+    if (options.unstable_strictMode === true) {
+      isStrictMode = true;
+    }
+    if (options.identifierPrefix !== undefined) {
+      identifierPrefix = options.identifierPrefix;
+    }
+    if (options.onUncaughtError !== undefined) {
+      onUncaughtError = options.onUncaughtError;
+    }
+    if (options.onCaughtError !== undefined) {
+      onCaughtError = options.onCaughtError;
+    }
+    if (options.onRecoverableError !== undefined) {
+      onRecoverableError = options.onRecoverableError;
+    }
+    if (enableDefaultTransitionIndicator) {
+      if (options.onDefaultTransitionIndicator !== undefined) {
+        onDefaultTransitionIndicator = options.onDefaultTransitionIndicator;
+      }
+    }
+    if (options.unstable_transitionCallbacks !== undefined) {
+      transitionCallbacks = options.unstable_transitionCallbacks;
+    }
+  }
+
+  const root = createContainer(
+    container,
+    ConcurrentRoot,
+    null,
+    isStrictMode,
+    concurrentUpdatesByDefaultOverride,
+    identifierPrefix,
+    onUncaughtError,
+    onCaughtError,
+    onRecoverableError,
+    onDefaultTransitionIndicator,
+    transitionCallbacks
+  );
+  markContainerAsRoot(root.current, container);
+
+  const rootContainerElement: Document | Element | DocumentFragment =
+    !disableCommentsAsDOMContainers && container.nodeType === COMMENT_NODE
+      ? (container.parentNode: any)
+      : container;
+  listenToAllSupportedEvents(rootContainerElement);
+
+  // $FlowFixMe[invalid-constructor] Flow no longer supports calling new on functions
+  return new ReactDOMRoot(root);
+}
+```
+
+- createContaier を探す
+
+```js
+export function createContainer(
+  containerInfo: Container,
+  tag: RootTag,
+  hydrationCallbacks: null | SuspenseHydrationCallbacks,
+  isStrictMode: boolean,
+  // TODO: Remove `concurrentUpdatesByDefaultOverride`. It is now ignored.
+  concurrentUpdatesByDefaultOverride: null | boolean,
+  identifierPrefix: string,
+  onUncaughtError: (
+    error: mixed,
+    errorInfo: {+componentStack?: ?string},
+  ) => void,
+  onCaughtError: (
+    error: mixed,
+    errorInfo: {
+      +componentStack?: ?string,
+      +errorBoundary?: ?component(...props: any),
+    },
+  ) => void,
+  onRecoverableError: (
+    error: mixed,
+    errorInfo: {+componentStack?: ?string},
+  ) => void,
+  onDefaultTransitionIndicator: () => void | (() => void),
+  transitionCallbacks: null | TransitionTracingCallbacks,
+): OpaqueRoot {
+  const hydrate = false;
+  const initialChildren = null;
+  const root = createFiberRoot(
+    containerInfo,
+    tag,
+    hydrate,
+    initialChildren,
+    hydrationCallbacks,
+    isStrictMode,
+    identifierPrefix,
+    null,
+    onUncaughtError,
+    onCaughtError,
+    onRecoverableError,
+    onDefaultTransitionIndicator,
+    transitionCallbacks,
+  );
+  registerDefaultIndicator(onDefaultTransitionIndicator);
+  return root;
+}
+```
+
+- 次は createFiberRoot
