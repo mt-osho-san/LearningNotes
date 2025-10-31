@@ -859,27 +859,6 @@ export function createRoot(
   let transitionCallbacks = null;
 
   if (options !== null && options !== undefined) {
-    if (__DEV__) {
-      if ((options: any).hydrate) {
-        console.warn(
-          "hydrate through createRoot is deprecated. Use ReactDOMClient.hydrateRoot(container, <App />) instead."
-        );
-      } else {
-        if (
-          typeof options === "object" &&
-          options !== null &&
-          (options: any).$$typeof === REACT_ELEMENT_TYPE
-        ) {
-          console.error(
-            "You passed a JSX element to createRoot. You probably meant to " +
-              "call root.render instead. " +
-              "Example usage:\n\n" +
-              "  let root = createRoot(domContainer);\n" +
-              "  root.render(<App />);"
-          );
-        }
-      }
-    }
     if (options.unstable_strictMode === true) {
       isStrictMode = true;
     }
@@ -931,7 +910,7 @@ export function createRoot(
 }
 ```
 
-- createContaier を探す
+- createContainer を探す
 
 ```js
 export function createContainer(
@@ -983,3 +962,97 @@ export function createContainer(
 ```
 
 - 次は createFiberRoot
+
+```
+⏺ createFiberRoot関数は、Reactの中核となるFiberツリーのルートを作成する重要な初期化処理です。
+
+  初期化されるデータ構造:
+
+  1. FiberRootNode - アプリケーション全体のコンテナ
+    - レーンベースの優先度システム（pendingLanes、suspendedLanesなど）
+    - エラーハンドリング用コールバック
+    - キャッシュシステム（pooledCache）
+  2. HostRootFiber - Fiberツリーのエントリーポイント
+  3. 初期キャッシュ - パフォーマンス最適化用
+  4. 更新キュー - 状態更新管理用
+
+  この構造になる理由:
+
+  - 関心の分離: コンテナレベル（スケジューリング）とツリー構造（調整）を分離
+  - 双方向参照: root.current = fiber、fiber.stateNode = rootで効率的な相互アクセス
+  - 並行レンダリング対応: レーンベースの優先度システムで時分割処理を実現
+
+  この初期化により、React全体の動作（更新スケジューリング、エラー処理、キャッシュ管理）を制御する中枢が確立されます。
+```
+
+```
+⏺ レーンとは：
+  レーンは32ビットの数値（ビットフラグ）で、作業の優先度を表します。
+
+  // 実際のレーン定義例
+  SyncLane = 0b010           // 最高優先度（ユーザー入力など）
+  DefaultLane = 0b100000     // 通常優先度
+  TransitionLane = 0b0100000000  // 低優先度（トランジション）
+
+  - 小さい数値 = 高優先度
+  - ビット演算で複数レーンを組み合わせ可能（|で結合）
+  - React が「どの作業を先にやるか」を決める仕組み
+
+  Fiberツリーのエントリーポイント：
+  HostRootFiberがコンポーネントツリーの開始点。Reactはここから子コンポーネントを辿って更新処理を行います。
+
+  コンテナ vs ツリーの違い：
+
+  - FiberRoot（コンテナ）:
+    - React アプリ全体の管理者
+    - スケジューリング、DOM参照、エラー処理を担当
+    - document.getElementById('root')への参照も持つ
+  - HostRootFiber（ツリー）:
+    - 実際のコンポーネントツリーの頂点
+    - <App /> などのコンポーネントの親にあたる
+    - 調整（reconciliation）処理に参加する実際のFiberノード
+
+  なぜ分離？
+  管理業務（スケジューリング）と実際のコンポーネント処理を分けることで、Reactが効率的に並行レンダリングできるようになっています。
+```
+
+```js
+// index.tsx
+
+const root = ReactDOM.createRoot(
+  document.getElementById("root") as HTMLElement
+);
+root.render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
+
+// createRootの引数は<div id=root></div>のようなHTMLElement
+// createRootの返り値は ReactDOMRootでwrapされたOpaqueRoot(FiberRootのtype alias)
+// createRoot -> createContainer -> createFiberRoot->
+// createFiberRootでは new FiberRootNodeでFiberRootを作成し、root.currentやcache,memorizedState,initializeUpdateQueue()の実行を行って、rootを返却
+// root.currentの実態はcreateHostRootFiberで作成されたFiberが入る
+// 上記FiberはWorkTagがHostRoot
+```
+
+```js
+function ReactDOMRoot(internalRoot: FiberRoot) {
+  this._internalRoot = internalRoot;
+}
+
+// childrenはおそらく
+// <App>...</App>のこと
+ReactDOMHydrationRoot.prototype.render = ReactDOMRoot.prototype.render =
+  // $FlowFixMe[missing-this-annot]
+  function (children: ReactNodeList): void {
+    const root = this._internalRoot;
+    if (root === null) {
+      throw new Error('Cannot update an unmounted root.');
+    }
+
+    updateContainer(children, root, null, null);
+  };
+```
+
+- 次はupdateContainerから
