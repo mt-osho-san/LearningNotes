@@ -1048,11 +1048,179 @@ ReactDOMHydrationRoot.prototype.render = ReactDOMRoot.prototype.render =
   function (children: ReactNodeList): void {
     const root = this._internalRoot;
     if (root === null) {
-      throw new Error('Cannot update an unmounted root.');
+      throw new Error("Cannot update an unmounted root.");
     }
 
     updateContainer(children, root, null, null);
   };
 ```
 
-- 次はupdateContainerから
+- 次は updateContainer から
+
+```js
+export function updateContainer(
+  element: ReactNodeList,
+  container: OpaqueRoot,
+  parentComponent: ?component(...props: any),
+  callback: ?Function,
+): Lane {
+  const current = container.current;
+  const lane = requestUpdateLane(current);
+  updateContainerImpl(
+    current,
+    lane,
+    element,
+    container,
+    parentComponent,
+    callback,
+  );
+  return lane;
+}
+```
+
+-
+
+```js
+
+function updateContainerImpl(
+  rootFiber: Fiber,
+  lane: Lane,
+  element: ReactNodeList,
+  container: OpaqueRoot,
+  parentComponent: ?component(...props: any),
+  callback: ?Function,
+): void {
+  if (enableSchedulingProfiler) {
+    markRenderScheduled(lane);
+  }
+
+  const context = getContextForSubtree(parentComponent);
+  if (container.context === null) {
+    container.context = context;
+  } else {
+    container.pendingContext = context;
+  }
+
+  const update = createUpdate(lane);
+  // Caution: React DevTools currently depends on this property
+  // being called "element".
+  update.payload = {element};
+
+  callback = callback === undefined ? null : callback;
+  if (callback !== null) {
+    update.callback = callback;
+  }
+
+  const root = enqueueUpdate(rootFiber, update, lane);
+  if (root !== null) {
+    startUpdateTimerByLane(lane, 'root.render()', null);
+    scheduleUpdateOnFiber(root, rootFiber, lane);
+    entangleTransitions(root, rootFiber, lane);
+  }
+}
+```
+
+- getContextForSubtree
+
+```js
+function getContextForSubtree(
+  parentComponent: ?component(...props: any),
+): Object {
+  if (!parentComponent) {
+    return emptyContextObject;
+  }
+
+  const fiber = getInstance(parentComponent);
+  const parentContext = findCurrentUnmaskedContext(fiber);
+
+  if (fiber.tag === ClassComponent) {
+    const Component = fiber.type;
+    if (isLegacyContextProvider(Component)) {
+      return processChildContext(fiber, Component, parentContext);
+    }
+  }
+
+  return parentContext;
+}
+```
+
+```js
+export function startUpdateTimerByLane(
+  lane: Lane,
+  method: string,
+  fiber: Fiber | null
+): void {
+  if (!enableProfilerTimer || !enableComponentPerformanceTrack) {
+    return;
+  }
+  if (isGestureRender(lane)) {
+    if (gestureUpdateTime < 0) {
+      gestureUpdateTime = now();
+      gestureUpdateTask = createTask(method);
+      gestureUpdateMethodName = method;
+      if (__DEV__ && fiber != null) {
+        gestureUpdateComponentName = getComponentNameFromFiber(fiber);
+      }
+      const newEventTime = resolveEventTimeStamp();
+      const newEventType = resolveEventType();
+      if (
+        newEventTime !== gestureEventRepeatTime ||
+        newEventType !== gestureEventType
+      ) {
+        gestureEventRepeatTime = -1.1;
+      }
+      gestureEventTime = newEventTime;
+      gestureEventType = newEventType;
+    }
+  } else if (isBlockingLane(lane)) {
+    if (blockingUpdateTime < 0) {
+      blockingUpdateTime = now();
+      blockingUpdateTask = createTask(method);
+      blockingUpdateMethodName = method;
+      if (__DEV__ && fiber != null) {
+        blockingUpdateComponentName = getComponentNameFromFiber(fiber);
+      }
+      if (isAlreadyRendering()) {
+        componentEffectSpawnedUpdate = true;
+        blockingUpdateType = SPAWNED_UPDATE;
+      }
+      const newEventTime = resolveEventTimeStamp();
+      const newEventType = resolveEventType();
+      if (
+        newEventTime !== blockingEventRepeatTime ||
+        newEventType !== blockingEventType
+      ) {
+        blockingEventRepeatTime = -1.1;
+      } else if (newEventType !== null) {
+        // If this is a second update in the same event, we treat it as a spawned update.
+        // This might be a microtask spawned from useEffect, multiple flushSync or
+        // a setState in a microtask spawned after the first setState. Regardless it's bad.
+        blockingUpdateType = SPAWNED_UPDATE;
+      }
+      blockingEventTime = newEventTime;
+      blockingEventType = newEventType;
+    }
+  } else if (isTransitionLane(lane)) {
+    if (transitionUpdateTime < 0) {
+      transitionUpdateTime = now();
+      transitionUpdateTask = createTask(method);
+      transitionUpdateMethodName = method;
+      if (__DEV__ && fiber != null) {
+        transitionUpdateComponentName = getComponentNameFromFiber(fiber);
+      }
+      if (transitionStartTime < 0) {
+        const newEventTime = resolveEventTimeStamp();
+        const newEventType = resolveEventType();
+        if (
+          newEventTime !== transitionEventRepeatTime ||
+          newEventType !== transitionEventType
+        ) {
+          transitionEventRepeatTime = -1.1;
+        }
+        transitionEventTime = newEventTime;
+        transitionEventType = newEventType;
+      }
+    }
+  }
+}
+```
